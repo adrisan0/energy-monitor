@@ -1,0 +1,157 @@
+name: energy-home-monitor
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-energy}
+      POSTGRES_USER: ${POSTGRES_USER:-energy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-password}
+      TZ: ${TIMEZONE:-Europe/Madrid}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-energy} -d ${POSTGRES_DB:-energy}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://energy:change-me-local-password@postgres:5432/energy}
+      METER_URL: ${METER_URL:-http://192.168.1.31/}
+      METER_VALUES_PATH: ${METER_VALUES_PATH:-/services/user/values.xml}
+      METER_DEVICES_PATH: ${METER_DEVICES_PATH:-/services/user/devices.xml}
+      METER_DEVICE_ID: ${METER_DEVICE_ID:-}
+      METER_POLL_INTERVAL_SECONDS: ${METER_POLL_INTERVAL_SECONDS:-60}
+      TIMEZONE: ${TIMEZONE:-Europe/Madrid}
+      SIMULATION_MODE: ${SIMULATION_MODE:-true}
+      API_WRITE_TOKEN: ${API_WRITE_TOKEN:-change-me-local-admin-token}
+      LOCAL_DEBUG_TECHNICAL: ${LOCAL_DEBUG_TECHNICAL:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      FEATURE_AUTOMATIONS: ${FEATURE_AUTOMATIONS:-false}
+      FEATURE_TELEGRAM: ${FEATURE_TELEGRAM:-false}
+      FEATURE_SMART_DEVICES: ${FEATURE_SMART_DEVICES:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_TOKENS: ${TELEGRAM_BOT_TOKENS:-}
+      TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
+      TELEGRAM_POLL_INTERVAL_SECONDS: ${TELEGRAM_POLL_INTERVAL_SECONDS:-3}
+      TELEGRAM_ALERT_COOLDOWN_SECONDS: ${TELEGRAM_ALERT_COOLDOWN_SECONDS:-900}
+      TELEGRAM_IMPORT_ALERT_MIN_W: ${TELEGRAM_IMPORT_ALERT_MIN_W:-200}
+      TELEGRAM_IMPORT_ALERT_HOLD_SECONDS: ${TELEGRAM_IMPORT_ALERT_HOLD_SECONDS:-120}
+      HOME_ASSISTANT_BASE_URL: ${HOME_ASSISTANT_BASE_URL:-}
+      HOME_ASSISTANT_TOKEN: ${HOME_ASSISTANT_TOKEN:-}
+      HOME_ASSISTANT_TIMEOUT_SECONDS: ${HOME_ASSISTANT_TIMEOUT_SECONDS:-10}
+      HOME_ASSISTANT_VERIFY_SSL: ${HOME_ASSISTANT_VERIFY_SSL:-true}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_DIR: /backups
+    volumes:
+      - backups_data:/backups
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3).read()"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "app.workers.poller"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://energy:change-me-local-password@postgres:5432/energy}
+      METER_URL: ${METER_URL:-http://192.168.1.31/}
+      METER_VALUES_PATH: ${METER_VALUES_PATH:-/services/user/values.xml}
+      METER_DEVICES_PATH: ${METER_DEVICES_PATH:-/services/user/devices.xml}
+      METER_DEVICE_ID: ${METER_DEVICE_ID:-}
+      METER_POLL_INTERVAL_SECONDS: ${METER_POLL_INTERVAL_SECONDS:-60}
+      TIMEZONE: ${TIMEZONE:-Europe/Madrid}
+      SIMULATION_MODE: ${SIMULATION_MODE:-true}
+      LOCAL_DEBUG_TECHNICAL: ${LOCAL_DEBUG_TECHNICAL:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      FEATURE_AUTOMATIONS: ${FEATURE_AUTOMATIONS:-false}
+      FEATURE_TELEGRAM: ${FEATURE_TELEGRAM:-false}
+      FEATURE_SMART_DEVICES: ${FEATURE_SMART_DEVICES:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_TOKENS: ${TELEGRAM_BOT_TOKENS:-}
+      TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
+      TELEGRAM_POLL_INTERVAL_SECONDS: ${TELEGRAM_POLL_INTERVAL_SECONDS:-3}
+      TELEGRAM_ALERT_COOLDOWN_SECONDS: ${TELEGRAM_ALERT_COOLDOWN_SECONDS:-900}
+      TELEGRAM_IMPORT_ALERT_MIN_W: ${TELEGRAM_IMPORT_ALERT_MIN_W:-200}
+      TELEGRAM_IMPORT_ALERT_HOLD_SECONDS: ${TELEGRAM_IMPORT_ALERT_HOLD_SECONDS:-120}
+      HOME_ASSISTANT_BASE_URL: ${HOME_ASSISTANT_BASE_URL:-}
+      HOME_ASSISTANT_TOKEN: ${HOME_ASSISTANT_TOKEN:-}
+      HOME_ASSISTANT_TIMEOUT_SECONDS: ${HOME_ASSISTANT_TIMEOUT_SECONDS:-10}
+      HOME_ASSISTANT_VERIFY_SSL: ${HOME_ASSISTANT_VERIFY_SSL:-true}
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.cli.main", "system", "check", "--json"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+  backup:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["/app/docker/backup-loop.sh"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://energy:change-me-local-password@postgres:5432/energy}
+      POSTGRES_DB: ${POSTGRES_DB:-energy}
+      POSTGRES_USER: ${POSTGRES_USER:-energy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-password}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_SCHEDULE_SECONDS: ${BACKUP_SCHEDULE_SECONDS:-86400}
+      TIMEZONE: ${TIMEZONE:-Europe/Madrid}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - backups_data:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -d /backups && test -w /backups"]
+      interval: 1m
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  backups_data:
