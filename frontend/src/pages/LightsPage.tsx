@@ -8,7 +8,7 @@ import { formatW } from "../utils/format";
 const DEFAULT_TOKEN = "change-me-local-admin-token";
 
 type AutomationProfile = "consumption_gradient" | "grid_import_alert" | "tariff_price";
-type Tier = "low" | "medium" | "high" | "surplus";
+type Tier = "low" | "medium" | "high" | "super";
 type Feedback = { tone: "success" | "error" | "info"; text: string } | null;
 
 const PROFILE_PRESETS: Record<
@@ -17,7 +17,7 @@ const PROFILE_PRESETS: Record<
     metric: string;
     surplusOverride: boolean;
     blinkOnSolarGridImport: boolean;
-    thresholds: { low_max_w: number; medium_max_w: number };
+    thresholds: { low_max_w: number; medium_max_w: number; high_max_w: number };
     colors: Record<Tier, string>;
     brightness: Record<Tier, number>;
     prices: Record<Tier, number>;
@@ -28,30 +28,30 @@ const PROFILE_PRESETS: Record<
     metric: "house_consumption_w",
     surplusOverride: true,
     blinkOnSolarGridImport: true,
-    thresholds: { low_max_w: 350, medium_max_w: 1650 },
-    colors: { low: "#22C55E", medium: "#F59E0B", high: "#EF4444", surplus: "#3B82F6" },
-    brightness: { low: 96, medium: 160, high: 255, surplus: 180 },
-    prices: { low: 0.12, medium: 0.17, high: 0.24, surplus: 0.24 },
+    thresholds: { low_max_w: 350, medium_max_w: 1650, high_max_w: 2800 },
+    colors: { low: "#22C55E", medium: "#F59E0B", high: "#EF4444", super: "#3B82F6" },
+    brightness: { low: 96, medium: 160, high: 255, super: 180 },
+    prices: { low: 0.12, medium: 0.17, high: 0.24, super: 0.24 },
     description: "Degradado por consumo de la vivienda, con prioridad opcional para excedente."
   },
   grid_import_alert: {
     metric: "grid_import_w",
     surplusOverride: false,
     blinkOnSolarGridImport: false,
-    thresholds: { low_max_w: 350, medium_max_w: 1650 },
-    colors: { low: "#22C55E", medium: "#F59E0B", high: "#EF4444", surplus: "#A855F7" },
-    brightness: { low: 96, medium: 144, high: 208, surplus: 255 },
-    prices: { low: 0.12, medium: 0.17, high: 0.24, surplus: 0.24 },
+    thresholds: { low_max_w: 350, medium_max_w: 1650, high_max_w: 2800 },
+    colors: { low: "#22C55E", medium: "#F59E0B", high: "#EF4444", super: "#A855F7" },
+    brightness: { low: 96, medium: 144, high: 208, super: 255 },
+    prices: { low: 0.12, medium: 0.17, high: 0.24, super: 0.24 },
     description: "Verde si no importas nada; amarillo, rojo y morado cuanto mas tiras de la red."
   },
   tariff_price: {
     metric: "house_consumption_w",
     surplusOverride: false,
     blinkOnSolarGridImport: false,
-    thresholds: { low_max_w: 350, medium_max_w: 1650 },
-    colors: { low: "#22C55E", medium: "#F59E0B", high: "#EF4444", surplus: "#A855F7" },
-    brightness: { low: 96, medium: 160, high: 255, surplus: 255 },
-    prices: { low: 0.12, medium: 0.17, high: 0.24, surplus: 0.24 },
+    thresholds: { low_max_w: 350, medium_max_w: 1650, high_max_w: 2800 },
+    colors: { low: "#22C55E", medium: "#F59E0B", high: "#EF4444", super: "#A855F7" },
+    brightness: { low: 96, medium: 160, high: 255, super: 255 },
+    prices: { low: 0.12, medium: 0.17, high: 0.24, super: 0.24 },
     description: "Color segun tramo 2.0TD simplificado: valle, llano y punta. Fines de semana se consideran valle."
   }
 };
@@ -99,25 +99,26 @@ function buildAutomationDraft(config: Record<string, unknown>, profile: Automati
       blink_on_solar_grid_import: automation.blink_on_solar_grid_import ?? preset.blinkOnSolarGridImport,
       thresholds: {
         low_max_w: thresholds.low_max_w ?? preset.thresholds.low_max_w,
-        medium_max_w: thresholds.medium_max_w ?? preset.thresholds.medium_max_w
+        medium_max_w: thresholds.medium_max_w ?? preset.thresholds.medium_max_w,
+        high_max_w: thresholds.high_max_w ?? preset.thresholds.high_max_w
       },
       colors: {
         low: colors.low ?? preset.colors.low,
         medium: colors.medium ?? preset.colors.medium,
         high: colors.high ?? preset.colors.high,
-        surplus: colors.surplus ?? preset.colors.surplus
+        super: colors.super ?? colors.surplus ?? preset.colors.super
       },
       brightness: {
         low: brightness.low ?? preset.brightness.low,
         medium: brightness.medium ?? preset.brightness.medium,
         high: brightness.high ?? preset.brightness.high,
-        surplus: brightness.surplus ?? preset.brightness.surplus
+        super: brightness.super ?? brightness.surplus ?? preset.brightness.super
       },
       prices: {
         low: prices.low ?? preset.prices.low,
         medium: prices.medium ?? preset.prices.medium,
         high: prices.high ?? preset.prices.high,
-        surplus: prices.surplus ?? preset.prices.surplus
+        super: prices.super ?? prices.surplus ?? preset.prices.super
       }
     }
   };
@@ -129,7 +130,7 @@ function tierLabel(profile: AutomationProfile, tier: Tier): string {
       low: "Valle",
       medium: "Llano",
       high: "Punta",
-      surplus: "Punta alta"
+      super: "Super"
     }[tier];
   }
   if (profile === "grid_import_alert") {
@@ -137,14 +138,14 @@ function tierLabel(profile: AutomationProfile, tier: Tier): string {
       low: "Sin importacion",
       medium: "Importacion baja",
       high: "Importacion media",
-      surplus: "Importacion alta"
+      super: "Importacion alta"
     }[tier];
   }
   return {
     low: "Consumo bajo",
     medium: "Consumo medio",
     high: "Consumo alto",
-    surplus: "Excedente"
+    super: "Super"
   }[tier];
 }
 
@@ -161,20 +162,22 @@ function currentTier(
 
   const lowMax = Number(automation.thresholds?.low_max_w ?? PROFILE_PRESETS[profile].thresholds.low_max_w);
   const mediumMax = Number(automation.thresholds?.medium_max_w ?? PROFILE_PRESETS[profile].thresholds.medium_max_w);
+  const highMax = Number(automation.thresholds?.high_max_w ?? PROFILE_PRESETS[profile].thresholds.high_max_w);
 
   if (profile === "consumption_gradient") {
-    if (Boolean(automation.surplus_override) && Number(latest?.grid_export_w ?? 0) > 0) return "surplus";
+    if (Boolean(automation.surplus_override) && Number(latest?.grid_export_w ?? 0) > 0) return "super";
     const value = Number(latest?.house_consumption_w ?? 0);
     if (value < lowMax) return "low";
     if (value < mediumMax) return "medium";
-    return "high";
+    if (value < highMax) return "high";
+    return "super";
   }
 
   const imported = Number(latest?.grid_import_w ?? 0);
   if (imported <= 0) return "low";
   if (imported < lowMax) return "medium";
   if (imported < mediumMax) return "high";
-  return "surplus";
+  return "super";
 }
 
 function tariffTierForTimestamp(timestamp: string | undefined): Tier {
@@ -195,7 +198,7 @@ function shouldBlinkSolarGridImport(
   return (
     profile === "consumption_gradient" &&
     Boolean(automation.blink_on_solar_grid_import ?? true) &&
-    Number(latest?.solar_w ?? 0) > 0 &&
+    Number(latest?.solar_w ?? 0) > Number(automation.thresholds?.low_max_w ?? PROFILE_PRESETS[profile].thresholds.low_max_w) &&
     Number(latest?.grid_import_w ?? 0) > 0
   );
 }
@@ -518,7 +521,7 @@ export default function LightsPage() {
                   ? ` y debe parpadear porque hay solar (${formatW(latest.data?.solar_w)}) e importacion (${formatW(latest.data?.grid_import_w)}).`
                   : profile === "tariff_price"
                     ? ` porque el tramo horario estimado cuesta ${activePrice.toFixed(3)} €/kWh.`
-                  : profile === "consumption_gradient" && activeTier === "surplus"
+                  : profile === "consumption_gradient" && activeTier === "super"
                     ? ` porque hay excedente (${formatW(latest.data?.grid_export_w)}).`
                     : "."}
               </div>
@@ -587,10 +590,23 @@ export default function LightsPage() {
                     }))
                   }
                 />
+                <NumberField
+                  label={profile === "consumption_gradient" ? "Alto hasta W" : "Importacion alta hasta W"}
+                  value={Number(automation.thresholds?.high_max_w ?? preset.thresholds.high_max_w)}
+                  onChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      automation: {
+                        ...(current?.automation as Record<string, unknown>),
+                        thresholds: { ...((current?.automation as Record<string, unknown> | undefined)?.thresholds as Record<string, unknown> ?? {}), high_max_w: value }
+                      }
+                    }))
+                  }
+                />
               </div>
             ) : (
-              <div className="grid gap-3 sm:grid-cols-3">
-                {(["low", "medium", "high"] as const).map((tier) => (
+              <div className="grid gap-3 sm:grid-cols-4">
+                {(["low", "medium", "high", "super"] as const).map((tier) => (
                   <NumberField
                     key={tier}
                     label={`Precio ${tierLabel(profile, tier)} €/kWh`}
@@ -615,9 +631,10 @@ export default function LightsPage() {
               lowColor={String(automation.colors?.low ?? preset.colors.low)}
               mediumColor={String(automation.colors?.medium ?? preset.colors.medium)}
               highColor={String(automation.colors?.high ?? preset.colors.high)}
-              surplusColor={String(automation.colors?.surplus ?? preset.colors.surplus)}
+              superColor={String(automation.colors?.super ?? preset.colors.super)}
               lowMax={Number(automation.thresholds?.low_max_w ?? preset.thresholds.low_max_w)}
               mediumMax={Number(automation.thresholds?.medium_max_w ?? preset.thresholds.medium_max_w)}
+              highMax={Number(automation.thresholds?.high_max_w ?? preset.thresholds.high_max_w)}
               currentConsumption={Number(latest.data?.house_consumption_w ?? 0)}
               currentImport={Number(latest.data?.grid_import_w ?? 0)}
               currentExport={Number(latest.data?.grid_export_w ?? 0)}
@@ -627,7 +644,7 @@ export default function LightsPage() {
             />
 
             <div className="grid gap-3 sm:grid-cols-2">
-              {(["low", "medium", "high", "surplus"] as const).map((tier) => (
+              {(["low", "medium", "high", "super"] as const).map((tier) => (
                 <div key={tier} className="rounded-md border border-slate-200 p-3 dark:border-white/10">
                   <label className="flex flex-col gap-1">
                     <span className="label">Color {tierLabel(profile, tier)}</span>
@@ -749,9 +766,10 @@ function GradientPreview({
   lowColor,
   mediumColor,
   highColor,
-  surplusColor,
+  superColor,
   lowMax,
   mediumMax,
+  highMax,
   currentConsumption,
   currentImport,
   currentExport,
@@ -763,9 +781,10 @@ function GradientPreview({
   lowColor: string;
   mediumColor: string;
   highColor: string;
-  surplusColor: string;
+  superColor: string;
   lowMax: number;
   mediumMax: number;
+  highMax: number;
   currentConsumption: number;
   currentImport: number;
   currentExport: number;
@@ -775,11 +794,12 @@ function GradientPreview({
 }) {
   const safeLowMax = Math.max(1, lowMax);
   const safeMediumMax = Math.max(safeLowMax + 1, mediumMax);
+  const safeHighMax = Math.max(safeMediumMax + 1, highMax);
   const focusValue = profile === "consumption_gradient" ? currentConsumption : currentImport;
-  const previewMax = Math.max(safeMediumMax * 1.2, safeMediumMax + 300);
+  const previewMax = Math.max(safeHighMax * 1.15, safeHighMax + 300);
   const markerLeft = clamp((focusValue / previewMax) * 100, 0, 100);
   const useSpecialState = profile === "consumption_gradient" && surplusEnabled && currentExport > 0;
-  const tariffMarker = profile === "tariff_price" ? { low: 16, medium: 50, high: 84, surplus: 84 }[activeTier] : markerLeft;
+  const tariffMarker = profile === "tariff_price" ? { low: 12, medium: 38, high: 68, super: 88 }[activeTier] : markerLeft;
 
   return (
     <div className="rounded-md border border-slate-200 p-3 dark:border-white/10">
@@ -806,10 +826,10 @@ function GradientPreview({
         style={{
           background:
             profile === "tariff_price"
-              ? `linear-gradient(90deg, ${lowColor} 0%, ${lowColor} 33%, ${mediumColor} 33%, ${mediumColor} 66%, ${highColor} 66%, ${highColor} 100%)`
+              ? `linear-gradient(90deg, ${lowColor} 0%, ${lowColor} 25%, ${mediumColor} 25%, ${mediumColor} 50%, ${highColor} 50%, ${highColor} 75%, ${superColor} 75%, ${superColor} 100%)`
               : profile === "consumption_gradient"
-              ? `linear-gradient(90deg, ${lowColor} 0%, ${mediumColor} ${Math.round((safeLowMax / previewMax) * 100)}%, ${highColor} ${Math.round((safeMediumMax / previewMax) * 100)}%, ${highColor} 100%)`
-              : `linear-gradient(90deg, ${lowColor} 0%, ${lowColor} ${Math.round((safeLowMax / previewMax) * 100)}%, ${mediumColor} ${Math.round((safeLowMax / previewMax) * 100)}%, ${highColor} ${Math.round((safeMediumMax / previewMax) * 100)}%, ${surplusColor} 100%)`
+              ? `linear-gradient(90deg, ${lowColor} 0%, ${mediumColor} ${Math.round((safeLowMax / previewMax) * 100)}%, ${highColor} ${Math.round((safeMediumMax / previewMax) * 100)}%, ${superColor} ${Math.round((safeHighMax / previewMax) * 100)}%, ${superColor} 100%)`
+              : `linear-gradient(90deg, ${lowColor} 0%, ${lowColor} ${Math.round((safeLowMax / previewMax) * 100)}%, ${mediumColor} ${Math.round((safeLowMax / previewMax) * 100)}%, ${highColor} ${Math.round((safeMediumMax / previewMax) * 100)}%, ${superColor} ${Math.round((safeHighMax / previewMax) * 100)}%, ${superColor} 100%)`
         }}
       >
         {!useSpecialState ? (
@@ -830,6 +850,7 @@ function GradientPreview({
           <span>0 W</span>
           <span>{safeLowMax} W</span>
           <span>{safeMediumMax} W</span>
+          <span>{safeHighMax} W</span>
           <span>{Math.round(previewMax)} W</span>
         </div>
       )}
@@ -840,8 +861,8 @@ function GradientPreview({
         <span>{tierLabel(profile, "medium")}</span>
         <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: highColor }} />
         <span>{tierLabel(profile, "high")}</span>
-        <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: surplusColor }} />
-        <span>{tierLabel(profile, "surplus")}</span>
+        <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: superColor }} />
+        <span>{tierLabel(profile, "super")}</span>
       </div>
     </div>
   );

@@ -113,8 +113,62 @@ async def test_alert_condition_uses_hold_and_cooldown(monkeypatch) -> None:
 
     monkeypatch.setattr(service, "_broadcast", fake_broadcast)
 
-    await service._handle_alert_condition(None, "import", True, "alert", "recovery")
-    await service._handle_alert_condition(None, "import", True, "alert", "recovery")
-    await service._handle_alert_condition(None, "import", False, "alert", "recovery")
+    await service._handle_alert_condition(None, "import", True, "alert", "recovery", hold_seconds=0)
+    await service._handle_alert_condition(None, "import", True, "alert", "recovery", hold_seconds=0)
+    await service._handle_alert_condition(None, "import", False, "alert", "recovery", hold_seconds=0)
 
     assert sent == ["alert", "recovery"]
+
+
+@pytest.mark.asyncio
+async def test_maybe_send_alerts_reports_meter_outage_and_recovery(monkeypatch) -> None:
+    settings = Settings(
+        telegram_allowed_chat_ids="1",
+        telegram_meter_alert_hold_seconds=0,
+        telegram_import_alert_hold_seconds=999999,
+        telegram_alert_cooldown_seconds=900,
+        prolonged_outage_seconds=600,
+    )
+    service = TelegramBotService(settings)
+    sent: list[str] = []
+
+    async def fake_broadcast(client, text):
+        sent.append(text)
+
+    monkeypatch.setattr(service, "_broadcast", fake_broadcast)
+
+    with get_session_factory()() as db:
+        old_sample = parse_meter_xml(
+            """
+            <root>
+              <variable><id>pac1</id><value>100</value></variable>
+              <variable><id>pac2</id><value>0</value></variable>
+              <variable><id>fpot1</id><value>1.000</value></variable>
+            </root>
+            """,
+            timestamp_utc=datetime(2026, 7, 6, 10, 0, tzinfo=UTC),
+        )
+        store_parsed_payload(db, old_sample, poll_duration_ms=1)
+        db.commit()
+
+    await service._maybe_send_alerts(None)
+    await service._maybe_send_alerts(None)
+
+    with get_session_factory()() as db:
+        fresh_sample = parse_meter_xml(
+            """
+            <root>
+              <variable><id>pac1</id><value>50</value></variable>
+              <variable><id>pac2</id><value>0</value></variable>
+              <variable><id>fpot1</id><value>1.000</value></variable>
+            </root>
+            """,
+            timestamp_utc=datetime.utcnow().replace(tzinfo=UTC),
+        )
+        store_parsed_payload(db, fresh_sample, poll_duration_ms=1)
+        db.commit()
+
+    await service._maybe_send_alerts(None)
+
+    assert "Medidor desconectado" in sent[0]
+    assert "Medidor recuperado" in sent[1]

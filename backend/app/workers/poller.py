@@ -9,10 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
-from app.core.timezone import utc_now
+from app.core.timezone import db_utc, utc_now
 from app.db.session import get_session_factory, init_engine
-from app.models import MeterSample
-from app.services.device_automation import apply_automation_for_sample
+from app.models import MeterSample, SystemEvent
+from app.services.device_automation import apply_automation_for_sample, apply_meter_outage_failsafe
 from app.services.events import record_event
 from app.services.meter_client import fetch_meter_payload
 from app.services.meter_parser import parse_meter_xml
@@ -37,6 +37,7 @@ async def poll_once(db: Session) -> PollResult:
         sample = store_parsed_payload(db, parsed, poll_duration_ms=fetched.duration_ms)
         await apply_automation_for_sample(db, sample)
         await apply_smart_plug_automation_for_sample(db, sample)
+        maybe_record_meter_recovery(db, sample)
         if parsed.data_quality == "invalid":
             record_event(
                 db,
@@ -65,7 +66,27 @@ async def poll_once(db: Session) -> PollResult:
         return PollResult(ok=False, error=str(exc))
 
 
-def detect_prolonged_outage(db: Session) -> None:
+def maybe_record_meter_recovery(db: Session, sample: MeterSample) -> None:
+    if sample.data_quality not in {"valid", "partial"}:
+        return
+    latest_outage_event = db.scalar(
+        select(SystemEvent)
+        .where(SystemEvent.event_type.in_(["meter_outage", "meter_recovered"]))
+        .order_by(desc(SystemEvent.timestamp_utc), desc(SystemEvent.id))
+        .limit(1)
+    )
+    if latest_outage_event is None or latest_outage_event.event_type != "meter_outage":
+        return
+    record_event(
+        db,
+        event_type="meter_recovered",
+        severity="info",
+        message="Lecturas del medidor recuperadas",
+        metadata={"sample_id": sample.id},
+    )
+
+
+async def detect_prolonged_outage(db: Session) -> None:
     settings = get_settings()
     latest = db.scalar(
         select(MeterSample)
@@ -75,8 +96,9 @@ def detect_prolonged_outage(db: Session) -> None:
     )
     if latest is None:
         return
-    age_seconds = (utc_now() - latest.timestamp_utc).total_seconds()
+    age_seconds = (utc_now() - db_utc(latest.timestamp_utc)).total_seconds()
     if age_seconds > settings.prolonged_outage_seconds:
+        await apply_meter_outage_failsafe(db)
         record_event(
             db,
             event_type="meter_outage",
@@ -99,7 +121,7 @@ async def run_forever() -> None:
     while True:
         with get_session_factory()() as db:
             result = await poll_once(db)
-            detect_prolonged_outage(db)
+            await detect_prolonged_outage(db)
         if result.ok:
             failures = 0
             sleep_for = settings.meter_poll_interval_seconds

@@ -230,6 +230,7 @@ class TelegramBotService:
         self.alerts = {
             "import": AlertState(),
             "peak_import": AlertState(),
+            "meter_outage": AlertState(),
         }
 
     async def run_forever(self) -> None:
@@ -356,6 +357,21 @@ class TelegramBotService:
             sample = latest_usable_sample(db)
         if sample is None:
             return
+
+        age_seconds = max(0, round((utc_now() - _as_utc(sample.timestamp_utc)).total_seconds()))
+        meter_outage = age_seconds > self.settings.prolonged_outage_seconds
+        await self._handle_alert_condition(
+            client,
+            "meter_outage",
+            meter_outage,
+            (
+                "Medidor desconectado: sin lecturas recientes. "
+                f"Ultima lectura hace {age_seconds}s ({sample.timestamp_local})."
+            ),
+            f"Medidor recuperado: han vuelto las lecturas ({sample.timestamp_local}).",
+            hold_seconds=self.settings.telegram_meter_alert_hold_seconds,
+        )
+
         imported = _decimal(sample.grid_import_w)
         import_condition = imported >= Decimal(str(self.settings.telegram_import_alert_min_w))
         peak_condition = import_condition and is_peak_time(sample.timestamp_local)
@@ -365,6 +381,7 @@ class TelegramBotService:
             import_condition,
             f"Alerta: importando {_format_w(imported)} de la red.",
             "Recuperado: ya no hay importacion relevante.",
+            hold_seconds=self.settings.telegram_import_alert_hold_seconds,
         )
         await self._handle_alert_condition(
             client,
@@ -372,6 +389,7 @@ class TelegramBotService:
             peak_condition,
             f"Alerta punta: importando {_format_w(imported)} en hora punta.",
             "Recuperado: ya no importas en hora punta.",
+            hold_seconds=self.settings.telegram_import_alert_hold_seconds,
         )
 
     async def _handle_alert_condition(
@@ -381,6 +399,8 @@ class TelegramBotService:
         condition: bool,
         alert_text: str,
         recovery_text: str,
+        *,
+        hold_seconds: int,
     ) -> None:
         now = utc_now()
         state = self.alerts[key]
@@ -393,7 +413,7 @@ class TelegramBotService:
         if state.since is None:
             state.since = now
             return
-        held = (now - state.since).total_seconds() >= self.settings.telegram_import_alert_hold_seconds
+        held = (now - state.since).total_seconds() >= hold_seconds
         cooled = (
             state.last_sent is None
             or (now - state.last_sent).total_seconds() >= self.settings.telegram_alert_cooldown_seconds

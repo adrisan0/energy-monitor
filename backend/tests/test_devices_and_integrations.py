@@ -58,6 +58,20 @@ def test_device_turn_on_route_requires_token(monkeypatch) -> None:
         assert authorized.json()["message"] == "Dispositivo encendido"
 
 
+def test_device_turn_off_route_returns_503_when_device_unreachable(monkeypatch) -> None:
+    from app.api import routes
+
+    class TimeoutAdapter(FakeAdapter):
+        async def turn_off(self) -> None:
+            raise TimeoutError("timed out")
+
+    monkeypatch.setattr(routes, "adapter_for_device", lambda device: TimeoutAdapter())
+    with TestClient(app) as client:
+        response = client.post("/api/v1/devices/5/off", headers={"X-Admin-Token": "test-token"})
+        assert response.status_code == 503
+        assert "No se pudo comunicar" in response.json()["detail"]
+
+
 def test_device_set_color_route(monkeypatch) -> None:
     from app.api import routes
 
@@ -165,7 +179,7 @@ def test_device_patch_route_accepts_stringified_json_body() -> None:
         response = client.patch(
             "/api/v1/devices/6",
             headers={"X-Admin-Token": "test-token", "Content-Type": "application/json"},
-            content='{"config":{"adapter":"flux_led","ip_address":"192.168.1.29","automation":{"enabled":true,"profile":"consumption_gradient","metric":"house_consumption_w","surplus_override":true,"thresholds":{"low_max_w":350,"medium_max_w":1650},"colors":{"low":"#22C55E","medium":"#F59E0B","high":"#EF4444","surplus":"#3B82F6"},"brightness":{"low":255,"medium":255,"high":255,"surplus":180}}},"control_mode":"automatic"}',
+            content='{"config":{"adapter":"flux_led","ip_address":"192.168.1.29","automation":{"enabled":true,"profile":"consumption_gradient","metric":"house_consumption_w","surplus_override":true,"thresholds":{"low_max_w":350,"medium_max_w":1650,"high_max_w":2800},"colors":{"low":"#22C55E","medium":"#F59E0B","high":"#EF4444","super":"#3B82F6"},"brightness":{"low":255,"medium":255,"high":255,"super":180}}},"control_mode":"automatic"}',
         )
         assert response.status_code == 200
         body = response.json()
@@ -211,9 +225,36 @@ def test_device_apply_automation_route_forces_preview(monkeypatch) -> None:
         store_parsed_payload(db, parsed, poll_duration_ms=2)
         db.commit()
     with TestClient(app) as client:
-        response = client.post("/api/v1/devices/6/apply-automation", headers={"X-Admin-Token": "test-token"})
+        response = client.post("/api/v1/devices/4/apply-automation", headers={"X-Admin-Token": "test-token"})
         assert response.status_code == 200
         assert response.json()["message"] == "Automatizacion aplicada: medium"
+
+
+def test_device_apply_automation_route_returns_503_when_device_unreachable(monkeypatch) -> None:
+    from app.api import routes
+
+    async def fake_apply(db, device, sample, *, force=False):
+        assert force is True
+        raise OSError("No route to host")
+
+    monkeypatch.setattr(routes, "apply_automation_to_device", fake_apply)
+    with get_session_factory()() as db:
+        parsed = parse_meter_xml(
+            """
+            <root>
+              <variable><id>pac1</id><value>100</value></variable>
+              <variable><id>pac2</id><value>500</value></variable>
+              <variable><id>fpot1</id><value>1.000</value></variable>
+            </root>
+            """,
+            timestamp_utc=datetime(2026, 7, 4, 10, 1, tzinfo=UTC),
+        )
+        store_parsed_payload(db, parsed, poll_duration_ms=2)
+        db.commit()
+    with TestClient(app) as client:
+        response = client.post("/api/v1/devices/4/apply-automation", headers={"X-Admin-Token": "test-token"})
+        assert response.status_code == 503
+        assert "No se pudo comunicar" in response.json()["detail"]
 
 
 def test_adapter_for_device_supports_kasa_hs100() -> None:

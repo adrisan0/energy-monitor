@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     telegram_alert_cooldown_seconds: int = Field(default=900, ge=1)
     telegram_import_alert_min_w: int = Field(default=200, ge=0)
     telegram_import_alert_hold_seconds: int = Field(default=120, ge=0)
+    telegram_meter_alert_hold_seconds: int = Field(default=120, ge=0)
     home_assistant_base_url: str | None = None
     home_assistant_token: str | None = None
     home_assistant_timeout_seconds: int = Field(default=10, ge=1)

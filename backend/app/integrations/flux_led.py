@@ -14,7 +14,13 @@ class FluxLedAdapter(DeviceAdapter):
         self.config = config
 
     async def get_state(self) -> DeviceState:
-        bulb = await self._query_bulb()
+        try:
+            bulb = await self._query_bulb()
+        except (OSError, TimeoutError) as exc:
+            return DeviceState(
+                online=False,
+                raw={"error": "device_unreachable", "detail": str(exc), "ip_address": self._ip_address()},
+            )
         rgb = getattr(bulb, "rgb", None)
         brightness = getattr(bulb, "brightness", None)
         power = _brightness_to_power(brightness)
@@ -61,7 +67,7 @@ class FluxLedAdapter(DeviceAdapter):
 
     def _set_rgb_sync(self, r: int, g: int, b: int, brightness: int | None) -> None:
         bulb = self._make_bulb()
-        if bool(getattr(bulb, "rgbwcapable", False)):
+        if _supports_white_channels(bulb):
             # RGBCW bulbs can keep a white channel active unless we zero it explicitly.
             bulb.setRgbw(r, g, b, 0, brightness=brightness, w2=0)
             return
@@ -70,6 +76,9 @@ class FluxLedAdapter(DeviceAdapter):
     def _set_rgb_blink_sync(self, r: int, g: int, b: int, brightness: int | None) -> None:
         bulb = self._make_bulb()
         bulb.turnOn()
+        if _supports_white_channels(bulb):
+            bulb.setRgbw(r, g, b, 0, brightness=brightness, w2=0)
+            return
         bulb.set_effect(_nearest_strobe_effect((r, g, b)), speed=60, brightness=_effect_brightness(brightness))
 
     async def _query_bulb(self) -> WifiLedBulb:
@@ -78,10 +87,14 @@ class FluxLedAdapter(DeviceAdapter):
         return bulb
 
     def _make_bulb(self) -> WifiLedBulb:
+        ip_address = self._ip_address()
+        return WifiLedBulb(ip_address)
+
+    def _ip_address(self) -> str:
         ip_address = self.config.get("ip_address") or self.config.get("host")
         if not isinstance(ip_address, str) or not ip_address.strip():
             raise RuntimeError("Dispositivo flux_led sin config.ip_address")
-        return WifiLedBulb(ip_address.strip())
+        return ip_address.strip()
 
     async def _run_blocking(self, fn) -> Any:
         return await asyncio.to_thread(fn)
@@ -91,6 +104,11 @@ def _brightness_to_power(brightness: Any) -> Decimal | None:
     if not isinstance(brightness, int):
         return None
     return Decimal(str(round((brightness / 255) * 100, 3)))
+
+
+def _supports_white_channels(bulb: WifiLedBulb) -> bool:
+    model = str(getattr(bulb, "model", "") or "").lower()
+    return bool(getattr(bulb, "rgbwcapable", False)) or "rgbw" in model or "rgbcw" in model or "rgbww" in model
 
 
 def _effect_brightness(brightness: int | None) -> int:

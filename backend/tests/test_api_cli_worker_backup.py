@@ -104,6 +104,59 @@ async def test_worker_records_empty_values_as_poll_failure(monkeypatch: pytest.M
         assert events[-1].event_type == "meter_poll_failed"
 
 
+@pytest.mark.asyncio
+async def test_detect_prolonged_outage_applies_white_failsafe(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = {"count": 0}
+
+    async def fake_apply_meter_outage_failsafe(db) -> None:
+        del db
+        called["count"] += 1
+
+    monkeypatch.setattr(poller, "apply_meter_outage_failsafe", fake_apply_meter_outage_failsafe)
+
+    with get_session_factory()() as db:
+        parsed = parse_meter_xml(
+            XML,
+            timestamp_utc=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+        )
+        store_parsed_payload(db, parsed, poll_duration_ms=7)
+        db.commit()
+
+        latest = db.query(__import__("app.models", fromlist=["MeterSample"]).MeterSample).order_by(
+            __import__("app.models", fromlist=["MeterSample"]).MeterSample.timestamp_utc.desc()
+        ).first()
+        latest.timestamp_utc = datetime(2026, 7, 2, 13, 0, tzinfo=UTC)
+        db.commit()
+
+        await poller.detect_prolonged_outage(db)
+        events = db.query(SystemEvent).all()
+
+    assert called["count"] == 1
+    assert events[-1].event_type == "meter_outage"
+
+
+def test_maybe_record_meter_recovery_marks_first_valid_sample_after_outage() -> None:
+    with get_session_factory()() as db:
+        record = SystemEvent(
+            timestamp_utc=datetime(2026, 7, 2, 13, 30, tzinfo=UTC),
+            event_type="meter_outage",
+            severity="warning",
+            message="outage",
+            metadata_json={},
+        )
+        db.add(record)
+        parsed = parse_meter_xml(XML, timestamp_utc=datetime(2026, 7, 2, 14, 0, tzinfo=UTC))
+        sample = store_parsed_payload(db, parsed, poll_duration_ms=7)
+        sample_id = sample.id
+
+        poller.maybe_record_meter_recovery(db, sample)
+        db.commit()
+        events = db.query(SystemEvent).order_by(SystemEvent.id.asc()).all()
+
+    assert events[-1].event_type == "meter_recovered"
+    assert events[-1].metadata_json["sample_id"] == sample_id
+
+
 def test_backup_creates_compressed_file() -> None:
     with get_session_factory()() as db:
         record = run_backup(db)

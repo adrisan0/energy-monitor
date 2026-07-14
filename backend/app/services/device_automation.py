@@ -17,24 +17,24 @@ DEFAULT_AUTOMATION = {
     "profile": "consumption_gradient",
     "surplus_override": True,
     "blink_on_solar_grid_import": True,
-    "thresholds": {"low_max_w": 350, "medium_max_w": 1650},
+    "thresholds": {"low_max_w": 350, "medium_max_w": 1650, "high_max_w": 2800},
     "colors": {
         "low": "#22C55E",
         "medium": "#F59E0B",
         "high": "#EF4444",
-        "surplus": "#3B82F6",
+        "super": "#3B82F6",
     },
     "brightness": {
         "low": 96,
         "medium": 160,
         "high": 255,
-        "surplus": 180,
+        "super": 180,
     },
     "prices": {
         "low": 0.12,
         "medium": 0.17,
         "high": 0.24,
-        "surplus": 0.24,
+        "super": 0.24,
     },
 }
 
@@ -66,8 +66,17 @@ async def apply_automation_for_sample(db: Session, sample: MeterSample) -> None:
         automation = merged_automation_config(device.config)
         if not automation["enabled"]:
             continue
+        recovering_from_outage = (device.config.get("last_applied") or {}).get("tier") == "meter_outage"
         try:
-            await apply_automation_to_device(db, device, sample)
+            target = await apply_automation_to_device(db, device, sample, force=recovering_from_outage)
+            if recovering_from_outage and target is not None:
+                record_event(
+                    db,
+                    event_type="device_outage_failsafe_cleared",
+                    severity="info",
+                    message=f"Recuperado color automatico tras volver el medidor en el dispositivo {device.name}",
+                    metadata={"device_id": device.id, "sample_id": sample.id, "tier": target.tier},
+                )
         except Exception as exc:  # noqa: BLE001
             record_event(
                 db,
@@ -75,6 +84,31 @@ async def apply_automation_for_sample(db: Session, sample: MeterSample) -> None:
                 severity="error",
                 message=str(exc),
                 metadata={"device_id": device.id, "sample_id": sample.id},
+            )
+
+
+async def apply_meter_outage_failsafe(db: Session) -> None:
+    devices = list(
+        db.scalars(
+            select(Device).where(
+                Device.active.is_(True),
+                Device.control_mode == "automatic",
+            )
+        )
+    )
+    for device in devices:
+        adapter_kind = str(device.config.get("adapter", ""))
+        if adapter_kind != "flux_led":
+            continue
+        try:
+            await apply_outage_white_to_device(db, device)
+        except Exception as exc:  # noqa: BLE001
+            record_event(
+                db,
+                event_type="device_outage_failsafe_failed",
+                severity="error",
+                message=str(exc),
+                metadata={"device_id": device.id},
             )
 
 
@@ -100,6 +134,11 @@ async def apply_automation_to_device(
     if target is None:
         return None
 
+    adapter = adapter_for_device(device)
+    state = await adapter.get_state()
+    if not state.online or state.is_on is not True:
+        return None
+
     last_applied = device.config.get("last_applied")
     current_payload = {
         "tier": target.tier,
@@ -110,7 +149,6 @@ async def apply_automation_to_device(
     if not force and last_applied == current_payload:
         return target
 
-    adapter = adapter_for_device(device)
     if target.blink:
         await adapter.set_rgb_blink(*target.rgb, brightness=target.brightness)
     else:
@@ -126,6 +164,38 @@ async def apply_automation_to_device(
         metadata={"device_id": device.id, "tier": target.tier, "blink": target.blink, "sample_id": sample.id},
     )
     return target
+
+
+async def apply_outage_white_to_device(db: Session, device: Device) -> bool:
+    if not device.active or device.control_mode != "automatic":
+        return False
+
+    adapter = adapter_for_device(device)
+    state = await adapter.get_state()
+    if not state.online or state.is_on is not True:
+        return False
+
+    current_payload = {
+        "tier": "meter_outage",
+        "rgb": [255, 255, 255],
+        "brightness": 255,
+        "blink": False,
+    }
+    if device.config.get("last_applied") == current_payload:
+        return False
+
+    await adapter.set_rgb(255, 255, 255, brightness=255)
+    updated_config = dict(device.config)
+    updated_config["last_applied"] = current_payload
+    device.config = updated_config
+    record_event(
+        db,
+        event_type="device_outage_failsafe_applied",
+        severity="warning",
+        message=f"Aplicado blanco de seguridad por perdida de medidor al dispositivo {device.name}",
+        metadata={"device_id": device.id},
+    )
+    return True
 
 
 def merged_automation_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -149,9 +219,14 @@ def merged_automation_config(config: dict[str, Any]) -> dict[str, Any]:
                 if k in {"enabled", "metric", "profile", "surplus_override", "blink_on_solar_grid_import"}
             }
         )
-        for section in ("thresholds", "colors", "brightness", "prices"):
+        if isinstance(automation.get("thresholds"), dict):
+            merged["thresholds"].update(automation["thresholds"])
+        for section in ("colors", "brightness", "prices"):
             if isinstance(automation.get(section), dict):
-                merged[section].update(automation[section])
+                values = dict(automation[section])
+                if "super" not in values and "surplus" in values:
+                    values["super"] = values["surplus"]
+                merged[section].update(values)
     return merged
 
 
@@ -163,13 +238,16 @@ def resolve_color_target(sample: MeterSample, automation: dict[str, Any]) -> Col
         return _resolve_tariff_price_target(sample, automation)
 
     target = _resolve_consumption_gradient_target(sample, automation)
-    if automation.get("blink_on_solar_grid_import", True) and _decimal(sample.solar_w) > Decimal("0") and _decimal(
-        sample.grid_import_w
-    ) > Decimal("0"):
+    solar_blink_min_w = Decimal(str(automation["thresholds"]["low_max_w"]))
+    if (
+        automation.get("blink_on_solar_grid_import", True)
+        and _decimal(sample.solar_w) > solar_blink_min_w
+        and _decimal(sample.grid_import_w) > Decimal("0")
+    ):
         return ColorTarget(target.tier, target.rgb, target.brightness, blink=True)
 
     if automation.get("surplus_override", True) and _decimal(sample.grid_export_w) > Decimal("0"):
-        return ColorTarget("surplus", _hex_to_rgb(automation["colors"]["surplus"]), int(automation["brightness"]["surplus"]))
+        return ColorTarget("super", _hex_to_rgb(automation["colors"]["super"]), int(automation["brightness"]["super"]))
 
     return target
 
@@ -179,6 +257,7 @@ def _resolve_consumption_gradient_target(sample: MeterSample, automation: dict[s
     metric_value = _decimal(getattr(sample, metric_name, None))
     low_max = Decimal(str(automation["thresholds"]["low_max_w"]))
     medium_max = Decimal(str(automation["thresholds"]["medium_max_w"]))
+    high_max = Decimal(str(automation["thresholds"]["high_max_w"]))
 
     if metric_value < low_max:
         tier = "low"
@@ -190,10 +269,15 @@ def _resolve_consumption_gradient_target(sample: MeterSample, automation: dict[s
         ratio = _safe_ratio(metric_value, low_max, medium_max)
         rgb = _interpolate_rgb(_hex_to_rgb(automation["colors"]["medium"]), _hex_to_rgb(automation["colors"]["high"]), ratio)
         brightness = _interpolate_int(int(automation["brightness"]["medium"]), int(automation["brightness"]["high"]), ratio)
-    else:
+    elif metric_value < high_max:
         tier = "high"
-        rgb = _hex_to_rgb(automation["colors"]["high"])
-        brightness = int(automation["brightness"]["high"])
+        ratio = _safe_ratio(metric_value, medium_max, high_max)
+        rgb = _interpolate_rgb(_hex_to_rgb(automation["colors"]["high"]), _hex_to_rgb(automation["colors"]["super"]), ratio)
+        brightness = _interpolate_int(int(automation["brightness"]["high"]), int(automation["brightness"]["super"]), ratio)
+    else:
+        tier = "super"
+        rgb = _hex_to_rgb(automation["colors"]["super"])
+        brightness = int(automation["brightness"]["super"])
     return ColorTarget(tier, rgb, brightness)
 
 
@@ -204,11 +288,14 @@ def _resolve_grid_import_alert_target(sample: MeterSample, automation: dict[str,
 
     low_max = Decimal(str(automation["thresholds"]["low_max_w"]))
     medium_max = Decimal(str(automation["thresholds"]["medium_max_w"]))
+    high_max = Decimal(str(automation["thresholds"]["high_max_w"]))
     if imported < low_max:
         return ColorTarget("medium", _hex_to_rgb(automation["colors"]["medium"]), int(automation["brightness"]["medium"]))
     if imported < medium_max:
         return ColorTarget("high", _hex_to_rgb(automation["colors"]["high"]), int(automation["brightness"]["high"]))
-    return ColorTarget("surplus", _hex_to_rgb(automation["colors"]["surplus"]), int(automation["brightness"]["surplus"]))
+    if imported < high_max:
+        return ColorTarget("super", _hex_to_rgb(automation["colors"]["super"]), int(automation["brightness"]["super"]))
+    return ColorTarget("super", _hex_to_rgb(automation["colors"]["super"]), int(automation["brightness"]["super"]))
 
 
 def _resolve_tariff_price_target(sample: MeterSample, automation: dict[str, Any]) -> ColorTarget:

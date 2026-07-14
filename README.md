@@ -40,6 +40,44 @@ docker compose up -d --build
 
 Si `values.xml` responde vacio (`<values />`), la app ahora intenta descubrir ids adicionales desde `devices.xml`. Si aun asi no aparecen `pac1`, `pac2` y `fpot1`, el medidor esta exponiendo otro endpoint o un id distinto.
 
+## Recuperar Wibeee por AP
+
+Si el medidor pierde la Wi-Fi y vuelve a emitir su SSID de rescate `WIBEEE_XX:XX:XX`, puedes usar el script de Linux [recover-wibeee.sh](/home/adrian/repo/energy-monitor/scripts/recover-wibeee.sh).
+
+Ejemplo de uso:
+
+```bash
+chmod +x scripts/recover-wibeee.sh
+./scripts/recover-wibeee.sh --ssid-pattern 'WIBEEE.*3C:F4:AE' --home-connection 'Tu WiFi'
+```
+
+Lo que hace ahora mismo:
+
+- Busca un SSID `WIBEEE...`
+- Se conecta a la Wi-Fi temporal del medidor usando `nmcli`
+- Prueba IPs locales tipicas del portal interno (`192.168.4.1`, `10.10.10.1`, `192.168.44.1`)
+- Puede abrir el portal en el navegador con `--open-browser`
+- Vuelve a la Wi-Fi normal y comprueba si el medidor reaparece en la LAN
+
+Cuando conozcas la llamada HTTP exacta del portal del Wibeee, el mismo script puede automatizar la reconfiguracion completa usando estas variables:
+
+```bash
+WIBEEE_CONFIG_URL=/ruta/o/url
+WIBEEE_CONFIG_METHOD=POST
+WIBEEE_CONFIG_DATA='ssid=TuRed&password=TuClave'
+WIBEEE_CONFIG_CONTENT_TYPE=application/x-www-form-urlencoded
+```
+
+Entonces bastaria con lanzarlo asi:
+
+```bash
+WIBEEE_CONFIG_URL=/ruta/o/url \
+WIBEEE_CONFIG_DATA='ssid=TuRed&password=TuClave' \
+./scripts/recover-wibeee.sh --ssid-pattern 'WIBEEE.*3C:F4:AE' --home-connection 'Tu WiFi'
+```
+
+Nota: el script actua sobre la Wi-Fi del host, no dentro de Docker. Durante unos segundos perderas la conexion normal mientras el equipo se conecta al AP del Wibeee.
+
 ## Home Assistant
 
 Integracion minima por REST API para consultar estado y encender/apagar entidades de Home Assistant desde esta app.

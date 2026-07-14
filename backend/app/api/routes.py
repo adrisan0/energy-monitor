@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Awaitable, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -255,7 +255,7 @@ async def device_turn_on(db: DbDep, device_id: int) -> Message:
     device = db.get(Device, device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Dispositivo no encontrado")
-    await adapter_for_device(device).turn_on()
+    await _run_device_command(adapter_for_device(device).turn_on, device)
     return Message(message="Dispositivo encendido")
 
 
@@ -264,7 +264,7 @@ async def device_turn_off(db: DbDep, device_id: int) -> Message:
     device = db.get(Device, device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Dispositivo no encontrado")
-    await adapter_for_device(device).turn_off()
+    await _run_device_command(adapter_for_device(device).turn_off, device)
     return Message(message="Dispositivo apagado")
 
 
@@ -275,7 +275,8 @@ async def device_set_color(db: DbDep, device_id: int, payload: Any = Body(...)) 
         raise HTTPException(status_code=404, detail="Dispositivo no encontrado")
     parsed = _parse_body_model(payload, DeviceColorUpdate)
     rgb = parsed.rgb
-    await adapter_for_device(device).set_rgb(rgb[0], rgb[1], rgb[2], brightness=parsed.brightness)
+    adapter = adapter_for_device(device)
+    await _run_device_command(lambda: adapter.set_rgb(rgb[0], rgb[1], rgb[2], brightness=parsed.brightness), device)
     updated_config = dict(device.config)
     updated_config["last_applied"] = {
         "tier": "manual",
@@ -312,12 +313,18 @@ async def device_apply_automation(db: DbDep, device_id: int) -> Message:
     if sample is None:
         raise HTTPException(status_code=404, detail="No hay lecturas utiles")
     adapter_kind = str((device.config or {}).get("adapter", ""))
-    if adapter_kind == "flux_led":
-        target = await apply_automation_to_device(db, device, sample, force=True)
-    elif adapter_kind in {"kasa_hs100", "sonoff_s61s"}:
-        target = await apply_smart_plug_automation_to_device(db, device, sample, force=True)
-    else:
-        raise HTTPException(status_code=400, detail="Este dispositivo no soporta automatizacion aplicable")
+    try:
+        if adapter_kind == "flux_led":
+            target = await apply_automation_to_device(db, device, sample, force=True)
+        elif adapter_kind in {"kasa_hs100", "sonoff_s61s"}:
+            target = await apply_smart_plug_automation_to_device(db, device, sample, force=True)
+        else:
+            raise HTTPException(status_code=400, detail="Este dispositivo no soporta automatizacion aplicable")
+    except (OSError, TimeoutError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No se pudo comunicar con {device.name}. Comprueba que esta encendido y accesible en la red local.",
+        ) from exc
     db.commit()
     if target is None:
         return Message(message="Automatizacion no aplicable")
@@ -503,6 +510,16 @@ def _aware(value: datetime | None) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+async def _run_device_command(command: Callable[[], Awaitable[None]], device: Device) -> None:
+    try:
+        await command()
+    except (OSError, TimeoutError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No se pudo comunicar con {device.name}. Comprueba que esta encendido y accesible en la red local.",
+        ) from exc
 
 
 def _parse_body_model(payload: Any, model: type[Any]) -> Any:

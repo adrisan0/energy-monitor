@@ -30,6 +30,9 @@ class FakeBulb:
         if brightness is not None:
             self.brightness = brightness
 
+    def set_effect(self, effect: str, speed: int, brightness: int = 100) -> None:
+        self.effect = (effect, speed, brightness)
+
 
 class FakeRgbwBulb(FakeBulb):
     def __init__(self, ip_address: str) -> None:
@@ -37,6 +40,7 @@ class FakeRgbwBulb(FakeBulb):
         self.model = "Bulb RGBCW (0x35)"
         self.rgbwcapable = True
         self.last_rgbw = None
+        self.effect = None
         self.white_active = True
         self.warm_white = 100
         self.cold_white = 80
@@ -74,6 +78,25 @@ async def test_flux_led_adapter_state(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_flux_led_adapter_state_returns_offline_when_unreachable(monkeypatch) -> None:
+    def factory(ip_address: str) -> FakeBulb:
+        del ip_address
+        raise OSError("No route to host")
+
+    monkeypatch.setattr("app.integrations.flux_led.WifiLedBulb", factory)
+    adapter = FluxLedAdapter({"ip_address": "192.168.1.29"})
+    state = await adapter.get_state()
+    assert state.online is False
+    assert state.is_on is None
+    assert state.power_w is None
+    assert state.raw == {
+        "error": "device_unreachable",
+        "detail": "No route to host",
+        "ip_address": "192.168.1.29",
+    }
+
+
+@pytest.mark.asyncio
 async def test_flux_led_adapter_turn_off(monkeypatch) -> None:
     monkeypatch.setattr("app.integrations.flux_led.WifiLedBulb", FakeBulb)
     adapter = FluxLedAdapter({"ip_address": "192.168.1.29"})
@@ -101,3 +124,20 @@ async def test_flux_led_adapter_set_rgb_zeroes_white_channels_on_rgbw_bulb(monke
     await adapter.set_rgb(10, 20, 30, brightness=99)
 
     assert captured["bulb"].last_rgbw == (10, 20, 30, 0, 99, 0)
+
+
+@pytest.mark.asyncio
+async def test_flux_led_adapter_blink_uses_saturated_rgb_on_rgbw_bulb(monkeypatch) -> None:
+    captured: dict[str, FakeRgbwBulb] = {}
+
+    def factory(ip_address: str) -> FakeRgbwBulb:
+        bulb = FakeRgbwBulb(ip_address)
+        captured["bulb"] = bulb
+        return bulb
+
+    monkeypatch.setattr("app.integrations.flux_led.WifiLedBulb", factory)
+    adapter = FluxLedAdapter({"ip_address": "192.168.1.55"})
+    await adapter.set_rgb_blink(255, 200, 0, brightness=30)
+
+    assert captured["bulb"].last_rgbw == (255, 200, 0, 0, 30, 0)
+    assert captured["bulb"].effect is None
