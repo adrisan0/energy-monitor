@@ -61,17 +61,27 @@ export default function GraphsPage() {
   const [selecting, setSelecting] = useState(false);
   const [selection, setSelection] = useState<SelectedRange>(null);
   const query = useMemo(() => rangeQuery(range), [range]);
+  const inferenceQuery = useMemo(() => {
+    const params = new URLSearchParams(query);
+    const start = Date.parse(params.get("start") ?? "");
+    const end = Date.parse(params.get("end") ?? "");
+    if (Number.isFinite(start)) params.set("start", new Date(start - 12 * 3_600_000).toISOString());
+    if (Number.isFinite(end)) params.set("end", new Date(Math.min(Date.now(), end + 12 * 3_600_000)).toISOString());
+    return params.toString();
+  }, [query]);
   const measurements = useMeasurements(resolution, query);
+  const inferenceMeasurements = useMeasurements("raw", inferenceQuery);
   const devices = useDevices();
-  const daikin = useDaikinReadings(query);
+  const daikin = useDaikinReadings(inferenceQuery);
   const tariffQuery = useQuery({ queryKey: ["tariff"], queryFn: api.tariff, refetchInterval: 300_000 });
   const sonoff = useMemo(() => findComputerPlug(devices.data ?? []), [devices.data]);
   const parentsThermo = useMemo(() => findParentsThermoPlug(devices.data ?? []), [devices.data]);
-  const computer = useSmartPlugReadings(sonoff?.id ?? null, query);
+  const computer = useSmartPlugReadings(sonoff?.id ?? null, inferenceQuery);
   const parentsThermoHistory = useSmartPlugReadings(parentsThermo?.id ?? null, query);
   const parentsThermoState = useDeviceState(parentsThermo?.id ?? null);
   const rows = (measurements.data?.data ?? []) as Measurement[] | Aggregate[];
   const rawRows = resolution === "raw" ? rows as Measurement[] : [];
+  const inferenceRows = resolution === "raw" ? (inferenceMeasurements.data?.data ?? []) as Measurement[] : [];
   const periodRows = useMemo(() => {
     if (resolution === "raw") return rows.filter((row) => matchesPeriod(Date.parse((row as Measurement).timestamp_local || (row as Measurement).timestamp_utc), period)) as Measurement[];
     return rows.filter((row) => matchesPeriod(Date.parse((row as Aggregate).period_start_local), period)) as Aggregate[];
@@ -82,8 +92,8 @@ export default function GraphsPage() {
   const tariff = tariffQuery.data;
 
   const cycles = useMemo(
-    () => detectAccumulatorCycles(rawRows, computerRows, daikinRows, sonoff != null, daikinRows.length > 0),
-    [rawRows, computerRows, daikinRows, sonoff]
+    () => detectAccumulatorCycles(inferenceRows, computerRows, daikinRows, sonoff != null, daikinRows.length > 0),
+    [inferenceRows, computerRows, daikinRows, sonoff]
   );
   const sourcePoints = useMemo(
     () => buildSourcePoints(rawRows, computerRows, daikinRows, cycles, period),

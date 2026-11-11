@@ -43,6 +43,7 @@ interface Step {
   daikinOn: boolean;
   daikinStateKnown: boolean;
   daikinTransitionNear: boolean;
+  decomposed?: boolean;
 }
 
 interface DaikinPowerInterval {
@@ -98,6 +99,19 @@ export function detectAccumulatorCycles(
     steps.push(makeStep(samples[i].timestamp, deltaW, rawDeltaW, computerDeltaW, daikinDeltaW, computerCovered, daikinCovered, samples, i, daikinTransitions));
   }
 
+  // A simultaneous start can later end as two distinct steps. Only split it
+  // when both complementary falls are observed without a telemetry gap.
+  const expandedSteps = steps.flatMap((step, index) => {
+    if (step.deltaW < 3150 || step.deltaW > 4500) return [step];
+    const gapIndex = lowerBound(gaps, step.timestamp, (value) => value);
+    const falls = steps.slice(index + 1).filter((end) => end.timestamp - step.timestamp <= 8 * 3_600_000 && end.deltaW < -700 && !(gaps[gapIndex] <= end.timestamp));
+    const small = falls.find((end) => -end.deltaW < 1950);
+    const large = falls.find((end) => -end.deltaW >= 1950 && -end.deltaW < 3150);
+    if (!small || !large || Math.abs(step.deltaW + small.deltaW + large.deltaW) > Math.max(350, step.deltaW * 0.15)) return [step];
+    return [{ ...step, deltaW: -small.deltaW, decomposed: true }, { ...step, deltaW: -large.deltaW, decomposed: true }];
+  });
+  steps.splice(0, steps.length, ...expandedSteps);
+
   const used = new Set<number>();
   const cycles: AccumulatorCycle[] = [];
   for (let i = 0; i < steps.length; i += 1) {
@@ -127,6 +141,7 @@ export function detectAccumulatorCycles(
     const timeClass: LoadTimeClass = startHour >= DAYTIME_START_HOUR && startHour < DAYTIME_END_HOUR ? "daytime" : "overnight";
     const relativeError = Math.abs(start.deltaW - Math.abs(end.deltaW)) / deltaW;
     let confidence: AccumulatorCycle["confidence"] = match.minutes <= 60 && relativeError <= 0.18 ? "alta" : match.minutes <= 240 && relativeError <= 0.23 ? "media" : "baja";
+    if (start.decomposed) confidence = "baja";
     if (start.daikinTransitionNear || end.daikinTransitionNear) confidence = "baja";
     else if (start.daikinOn || end.daikinOn) confidence = lowerConfidence(confidence, "media");
     if ((computerMeteringConfigured && (!start.computerCovered || !end.computerCovered)) ||
