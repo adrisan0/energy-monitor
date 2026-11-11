@@ -105,9 +105,12 @@ export function detectAccumulatorCycles(
     if (step.deltaW < 3150 || step.deltaW > 4500) return [step];
     const gapIndex = lowerBound(gaps, step.timestamp, (value) => value);
     const falls = steps.slice(index + 1).filter((end) => end.timestamp - step.timestamp <= 8 * 3_600_000 && end.deltaW < -700 && !(gaps[gapIndex] <= end.timestamp));
-    const small = falls.find((end) => -end.deltaW < 1950);
-    const large = falls.find((end) => -end.deltaW >= 1950 && -end.deltaW < 3150);
-    if (!small || !large || Math.abs(step.deltaW + small.deltaW + large.deltaW) > Math.max(350, step.deltaW * 0.15)) return [step];
+    const pairs = falls.flatMap((small) => falls
+      .filter((large) => large !== small && -small.deltaW < 1950 && -large.deltaW >= 1950 && -large.deltaW < 3150)
+      .map((large) => ({ small, large, error: Math.abs(step.deltaW + small.deltaW + large.deltaW) })));
+    const pair = pairs.sort((a, b) => a.error - b.error)[0];
+    if (!pair || pair.error > Math.max(350, step.deltaW * 0.18)) return [step];
+    const { small, large } = pair;
     return [{ ...step, deltaW: -small.deltaW, decomposed: true }, { ...step, deltaW: -large.deltaW, decomposed: true }];
   });
   steps.splice(0, steps.length, ...expandedSteps);
