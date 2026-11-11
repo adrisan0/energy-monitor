@@ -1,5 +1,5 @@
 import { Suspense, lazy, useState } from "react";
-import { Activity, BarChart3, Coins, Database, Home, Lightbulb, Moon, Plug, Sun, Tags, Thermometer } from "lucide-react";
+import { Activity, BarChart3, BatteryCharging, Coins, Database, Home, Lightbulb, Moon, Plug, Sun, Tags, Thermometer } from "lucide-react";
 
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const GraphsPage = lazy(() => import("./pages/GraphsPage"));
@@ -9,8 +9,9 @@ const AnnotationsPage = lazy(() => import("./pages/AnnotationsPage"));
 const LightsPage = lazy(() => import("./pages/LightsPage"));
 const PlugsPage = lazy(() => import("./pages/PlugsPage"));
 const ClimatePage = lazy(() => import("./pages/ClimatePage"));
+const AccumulatorsPage = lazy(() => import("./pages/AccumulatorsPage"));
 
-type PageKey = "home" | "graphs" | "money" | "raw" | "annotations" | "lights" | "plugs" | "climate";
+type PageKey = "home" | "graphs" | "money" | "raw" | "annotations" | "lights" | "plugs" | "climate" | "accumulators";
 
 const pages = [
   { key: "home" as const, label: "Inicio", icon: Home },
@@ -19,6 +20,7 @@ const pages = [
   { key: "lights" as const, label: "Luces", icon: Lightbulb },
   { key: "plugs" as const, label: "Enchufes", icon: Plug },
   { key: "climate" as const, label: "Clima Daikin", icon: Thermometer },
+  { key: "accumulators" as const, label: "Acumuladores", icon: BatteryCharging },
   { key: "raw" as const, label: "Datos brutos", icon: Database },
   { key: "annotations" as const, label: "Analisis", icon: Tags }
 ];
@@ -33,6 +35,7 @@ export default function App() {
     lights: LightsPage,
     plugs: PlugsPage,
     climate: ClimatePage,
+    accumulators: AccumulatorsPage,
     raw: RawDataPage,
     annotations: AnnotationsPage
   }[page];

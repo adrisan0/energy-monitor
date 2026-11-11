@@ -43,7 +43,7 @@ export const api = {
   daikinReadings: (range: string) => request<DaikinReadingsResponse>(`/climate/daikin/readings?${range}&limit=20000`),
   smartPlugReadings: (deviceId: number, range: string) => request<SmartPlugReadingsResponse>(`/smart-plugs/readings?device_id=${deviceId}&${range}&limit=50000`),
   measurements: (resolution: string, range: string) =>
-    request<MeasurementsResponse>(`/measurements?resolution=${resolution}&${range}`),
+    request<MeasurementsResponse>(`/measurements?resolution=${resolution}&${range}&limit=10000`),
   rawLatest: () => request<RawPayload>("/measurements/raw/latest"),
   summary: (period = "day") => request<EnergySummary>(`/energy/summary?period=${period}`),
   comparison: (period = "day") => request<EnergyComparison>(`/energy/comparison?period=${period}`),
