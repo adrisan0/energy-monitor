@@ -167,13 +167,15 @@ export default function GraphsPage() {
         {measurements.isError ? <p role="alert" className="text-sm text-rose-500">No se pudieron cargar las lecturas: {measurements.error.message}</p> : null}
         {!measurements.isPending && !measurements.isError && rows.length === 0 ? <p className="text-sm text-slate-500">No hay lecturas en este periodo.</p> : null}
         {rows.length > 0 ? <EChart option={line} height={430} onEvents={brushEvents} /> : null}
+        <p className="mt-2 text-xs text-slate-500">🌙 Fondo sombreado: noche de referencia, de 22:00 a 08:00. ☀️ El resto es día; estas horas no representan el amanecer y anochecer reales.</p>
+        {sonoff && !computerRows.some((row) => row.online && row.power_w != null) ? <p className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-100">💻 El Sonoff del ordenador está identificado, pero no hay lecturas de potencia en este periodo. Su consumo queda incluido en «Otros».</p> : null}
         {parentsThermo ? <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
           <strong>Termo de tus padres · TP‑Link:</strong>{" "}
           {parentsThermoState.data?.online
             ? `ahora ${parentsThermoState.data.is_on ? "encendido" : "apagado"}. `
             : parentsThermoState.data ? "sin conexión con el enchufe. " : "consultando el estado actual. "}
           {parentsThermoRows.length
-            ? `La gráfica muestra ${parentsThermoRows.length.toLocaleString("es-ES")} cambios/muestras históricas de estado. El TP‑Link no mide vatios; sus picos asociados se contrastan con Wibeee.`
+            ? `La gráfica muestra ${parentsThermoRows.length.toLocaleString("es-ES")} muestras históricas de estado. El TP‑Link no mide vatios; el estado por sí solo no confirma cuándo calienta el termo.`
             : "El servidor empieza a guardar el estado desde esta actualización; no hay histórico anterior del TP‑Link. No mide vatios, así que los picos de consumo se atribuyen por inferencia del Wibeee."}
         </div> : null}
         {selecting && resolution === "raw" ? <p className="text-xs text-sky-700 dark:text-sky-300">Arrastra sobre la gráfica para seleccionar un tramo. El coste se integra con las lecturas y el precio horario configurado.</p> : null}
@@ -181,12 +183,11 @@ export default function GraphsPage() {
         <div className="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300 sm:grid-cols-2 xl:grid-cols-3">
           <span><b className="text-sky-500">Total vivienda</b> · Wibeee (medición)</span>
           <span><b className="text-emerald-500">Ordenador</b> · Sonoff (medición directa){sonoff ? " · enchufe identificado" : " · sin Sonoff identificado"}</span>
-          <span><b className="text-violet-500">Daikin</b> · estimación por variación de energía ONECTA</span>
-          <span><b className="text-amber-500">Acumulador dormitorio</b> · inferido por ciclos</span>
-          <span><b className="text-rose-500">Acumulador comedor</b> · inferido por ciclos</span>
-          <span><b className="text-orange-500">Cargas térmicas diurnas</b> · picos candidatos ~1 kW / ~2,5 kW; inferidos, sin atribución directa a un termo.</span>
+          <span><b className="text-red-500">♨️ Daikin</b> · estimación ONECTA</span>
+          <span><b className="text-orange-600">🔥 Acumuladores</b> · dormitorio y comedor, inferidos por ciclos</span>
+          <span><b className="text-blue-500">💧 Posibles termos</b> · picos inferidos; pueden ser otros aparatos.</span>
           <span><b className="text-slate-500">Resto</b> · diferencia estimada, no atribuida</span>
-          <span><b>Termo padres (TP-Link)</b> · solo estado; no mide vatios y no se le asigna consumo.</span>
+          <span><b>🔌 Termo padres (TP-Link)</b> · estado del enchufe, sin medición de potencia.</span>
         </div>
         {tariffQuery.isError ? <p className="mt-2 text-xs text-amber-700">No se pudo cargar la tarifa; no se calcula el coste.</p> : null}
         {!tariff ? <p className="mt-2 text-xs text-amber-700">Cargando precios configurados de la tarifa…</p> : <p className="mt-2 text-xs text-slate-500">Los importes se leen de Ajustes de tarifa; actualízalos allí cuando cambie tu contrato.</p>}
@@ -218,9 +219,12 @@ function buildSourcePoints(rows: Measurement[], computerRows: SmartPlugReading[]
     const daytimeCombined = cycleAt(point.timestamp, "combined", "daytime");
     const pc = point.computerW ?? 0;
     const daikin = point.daikinW ?? 0;
-    const known = pc + daikin + small + large + combined + daytimeSmall + daytimeLarge + daytimeCombined;
-    const factor = known > point.watts && known > 0 ? point.watts / known : 1;
-    const components = [pc, daikin, small, large, combined, daytimeSmall, daytimeLarge, daytimeCombined].map((value) => value * factor);
+    const measuredPc = Math.min(pc, Math.max(0, point.watts));
+    const inferred = [daikin, small, large, combined, daytimeSmall, daytimeLarge, daytimeCombined];
+    const inferredTotal = inferred.reduce((sum, value) => sum + value, 0);
+    const remaining = Math.max(0, point.watts - measuredPc);
+    const factor = inferredTotal > remaining && inferredTotal > 0 ? remaining / inferredTotal : 1;
+    const components = [measuredPc, ...inferred.map((value) => value * factor)];
     return { time: point.timestamp, total: point.watts, pc: components[0], daikin: components[1], small: components[2], large: components[3], combined: components[4], daytimeSmall: components[5], daytimeLarge: components[6], daytimeCombined: components[7], other: Math.max(0, point.watts - components.reduce((sum, value) => sum + value, 0)), imported: rowByTime.get(point.timestamp)?.grid_import_w ?? 0 };
   });
 }
@@ -267,24 +271,24 @@ function buildAggregatePoints(rows: Array<Measurement | Aggregate>, resolution: 
 
 function sourceOption(points: CostPoint[], mode: GraphMode, selecting: boolean, parentsThermoRows: SmartPlugReading[], range: string): EChartsOption {
   const series = [
-    ["Ordenador · Sonoff medido", "pc", "energyPc", "costPc"], ["Daikin · estimado", "daikin", "energyDaikin", "costDaikin"],
-    ["Acumulador dormitorio · inferido", "small", "energySmall", "costSmall"], ["Acumulador comedor · inferido", "large", "energyLarge", "costLarge"],
-    ["Acumuladores · combinado", "combined", "energyCombined", "costCombined"],
-    ["Carga diurna candidata · ~1 kW", "daytimeSmall", "energyDaytimeSmall", "costDaytimeSmall"],
-    ["Carga diurna candidata · ~2,5 kW", "daytimeLarge", "energyDaytimeLarge", "costDaytimeLarge"],
-    ["Carga diurna candidata · combinada", "daytimeCombined", "energyDaytimeCombined", "costDaytimeCombined"],
-    ["Resto · sin atribuir", "other", "energyOther", "costOther"]
+    ["💻 Ordenador", "pc", "energyPc", "costPc"], ["♨️ Daikin · estimado", "daikin", "energyDaikin", "costDaikin"],
+    ["🔥 Dormitorio · inferido", "small", "energySmall", "costSmall"], ["🔥 Comedor · inferido", "large", "energyLarge", "costLarge"],
+    ["🔥 Combinado · inferido", "combined", "energyCombined", "costCombined"],
+    ["💧 Posible termo ~1 kW", "daytimeSmall", "energyDaytimeSmall", "costDaytimeSmall"],
+    ["💧 Posible termo ~2,5 kW", "daytimeLarge", "energyDaytimeLarge", "costDaytimeLarge"],
+    ["💧 Posible carga combinada", "daytimeCombined", "energyDaytimeCombined", "costDaytimeCombined"],
+    ["Otros · sin identificar", "other", "energyOther", "costOther"]
   ] as const;
-  const color = ["#10b981", "#8b5cf6", "#f59e0b", "#ef4444", "#a855f7", "#fb923c", "#f97316", "#c2410c", "#64748b"];
+  const color = ["#10b981", "#ef4444", "#ea580c", "#be123c", "#9f1239", "#3b82f6", "#1d4ed8", "#60a5fa", "#64748b"];
   const valueKey = (field: (typeof series)[number]) => mode === "power" ? field[1] : mode === "energy" ? field[2] : field[3];
   const totalValue = (point: CostPoint) => mode === "power" ? point.total : mode === "energy" ? point.energyTotal : point.costTotal;
   const unit = mode === "power" ? "W" : mode === "energy" ? "kWh" : "€";
   const seriesOptions: NonNullable<EChartsOption["series"]> = series.map((field, index) => ({ name: field[0], type: "bar", stack: "loads", barMaxWidth: 24, data: points.map((point) => [point.time, point[valueKey(field)]]), itemStyle: { color: color[index] } }));
-  seriesOptions.push({ name: "Consumo total · Wibeee", type: "line", showSymbol: false, connectNulls: false, lineStyle: { width: 2.5, type: "solid" }, data: points.map((point) => [point.time, totalValue(point)]), itemStyle: { color: "#38bdf8" } });
+  seriesOptions.push({ name: "Consumo total · Wibeee", type: "line", showSymbol: false, connectNulls: false, lineStyle: { width: 2.5, type: "solid" }, data: points.map((point) => [point.time, totalValue(point)]), itemStyle: { color: "#38bdf8" }, markArea: { silent: true, itemStyle: { color: "rgba(30, 41, 59, 0.12)" }, label: { show: true, position: "insideTopLeft", fontSize: 10, color: "#94a3b8", formatter: "🌙" }, data: nightBands(points) } });
   if (mode === "power") seriesOptions.push({ name: "Termo padres · TP‑Link (apagado/encendido)", type: "line", yAxisIndex: 1, step: "end", showSymbol: false, connectNulls: true, lineStyle: { width: 2, color: "#facc15" }, itemStyle: { color: "#facc15" }, data: [...parentsThermoRows].sort((a, b) => Date.parse(a.captured_at_utc) - Date.parse(b.captured_at_utc)).map((row) => [Date.parse(row.captured_at_utc), row.online && row.is_on != null ? Number(row.is_on) : null]) });
   return {
     color, tooltip: { trigger: "axis", valueFormatter: (value) => mode === "power" ? formatW(Number(value)) : mode === "energy" ? `${Number(value).toFixed(4)} kWh` : formatMoney(Number(value)) },
-    legend: { top: 0, textStyle: { color: "#cbd5e1" } }, grid: { top: 52, left: 75, right: mode === "power" ? 62 : 20, bottom: 70 },
+    legend: { type: "scroll", top: 0, textStyle: { color: "#cbd5e1" } }, grid: { top: 52, left: 75, right: mode === "power" ? 62 : 20, bottom: 70 },
     toolbox: { feature: { dataZoom: {}, saveAsImage: {} } }, dataZoom: [{ type: "inside" }, { type: "slider", height: 24 }],
     brush: selecting ? { brushType: "lineX", xAxisIndex: 0, brushMode: "single", transformable: false } : { brushType: false },
     xAxis: hourlyAxis(range),
@@ -305,13 +309,31 @@ function aggregateOption(points: ReturnType<typeof buildAggregatePoints>, mode: 
     tooltip: { trigger: "axis", valueFormatter: (item) => isCost ? formatMoney(Number(item)) : isPower ? formatW(Number(item)) : `${Number(item).toFixed(3)} kWh` },
     legend: { top: 0 }, grid: { top: 48, left: 70, right: 20, bottom: 60 }, dataZoom: [{ type: "inside" }, { type: "slider", height: 22 }],
     xAxis: hourlyAxis(range), yAxis: { type: "value", name: isCost ? "Coste variable estimado · €" : isPower ? "Potencia máxima · W" : "Consumo · kWh", min: 0 },
-    series: [{ name, type: "bar", barMaxWidth: 24, data: points.map((point) => [point.time, value(point)]) }]
+    series: [{ name, type: "bar", barMaxWidth: 24, data: points.map((point) => [point.time, value(point)]), markArea: { silent: true, itemStyle: { color: "rgba(30, 41, 59, 0.12)" }, label: { show: true, position: "insideTopLeft", fontSize: 10, formatter: "🌙" }, data: nightBands(points) } }]
   };
 }
 
 function hourlyAxis(range: string): EChartsOption["xAxis"] {
   const interval = range === "1h" ? 5 * 60_000 : range === "week" ? 6 * 3_600_000 : range === "month" ? 24 * 3_600_000 : range === "year" ? 7 * 24 * 3_600_000 : 3_600_000;
   return { type: "time", minInterval: interval, maxInterval: interval, axisLabel: { color: "#94a3b8", hideOverlap: true }, splitLine: { show: true, lineStyle: { type: "dashed", color: "#64748b", opacity: 0.55 } } };
+}
+
+function nightBands(points: Array<{ time: number }>): Array<[{ xAxis: number }, { xAxis: number }]> {
+  if (!points.length) return [];
+  const first = points[0].time;
+  const last = points[points.length - 1].time;
+  if (last - first > 8 * 86_400_000) return [];
+  const day = new Date(first);
+  day.setHours(0, 0, 0, 0);
+  day.setDate(day.getDate() - 1);
+  const result: Array<[{ xAxis: number }, { xAxis: number }]> = [];
+  while (day.getTime() <= last) {
+    const start = new Date(day); start.setHours(22);
+    const end = new Date(day); end.setDate(end.getDate() + 1); end.setHours(8);
+    if (end.getTime() >= first) result.push([{ xAxis: Math.max(first, start.getTime()) }, { xAxis: Math.min(last, end.getTime()) }]);
+    day.setDate(day.getDate() + 1);
+  }
+  return result;
 }
 
 function matchesPeriod(timestamp: number, period: PeriodFilter): boolean {
