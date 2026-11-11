@@ -6,12 +6,12 @@ export function powerLineOption(rows: Measurement[] | Aggregate[], resolution: s
   return {
     color: ["#f59e0b", "#ef4444", "#2563eb", "#10b981", "#8b5cf6"],
     tooltip: { trigger: "axis" },
-    legend: { top: 0 },
+    legend: { top: 0, textStyle: { color: "#cbd5e1" } },
     grid: { top: 52, left: 50, right: 20, bottom: 70 },
     toolbox: { feature: { dataZoom: {}, saveAsImage: {} } },
     dataZoom: [{ type: "inside" }, { type: "slider", height: 24 }],
-    xAxis: { type: "time" },
-    yAxis: { type: "value", name: resolution === "raw" ? "W" : "kWh" },
+    xAxis: { type: "time", axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
+    yAxis: { type: "value", name: resolution === "raw" ? "W" : "kWh", axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
     series: [
       { name: "Solar", type: "line", smooth: true, symbol: "none", data: points.map((p) => [p.time, p.solar]) },
       { name: "Consumo", type: "line", smooth: true, symbol: "none", data: points.map((p) => [p.time, p.consumption]) },
@@ -27,11 +27,11 @@ export function flowAreaOption(rows: Measurement[] | Aggregate[], resolution: st
   return {
     color: ["#f59e0b", "#2563eb", "#10b981"],
     tooltip: { trigger: "axis" },
-    legend: { top: 0 },
+    legend: { top: 0, textStyle: { color: "#cbd5e1" } },
     grid: { top: 52, left: 50, right: 20, bottom: 70 },
     dataZoom: [{ type: "inside" }, { type: "slider", height: 24 }],
-    xAxis: { type: "time" },
-    yAxis: { type: "value" },
+    xAxis: { type: "time", axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
+    yAxis: { type: "value", axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
     series: [
       { name: "Autoconsumo", type: "line", stack: "flow", areaStyle: {}, symbol: "none", data: points.map((p) => [p.time, p.self]) },
       { name: "Importacion", type: "line", stack: "flow", areaStyle: {}, symbol: "none", data: points.map((p) => [p.time, p.imported]) },
@@ -87,7 +87,9 @@ function normalizeRows(rows: Measurement[] | Aggregate[], resolution: string) {
     .map((row) => {
       if (resolution === "raw" && "timestamp_utc" in row) {
         return {
-          time: row.timestamp_local,
+          // ECharts' time axis is inconsistent with long fractional seconds
+          // in ISO timestamps across browsers. Use an explicit epoch instead.
+          time: Date.parse(row.timestamp_local),
           solar: row.solar_w ?? 0,
           consumption: row.house_consumption_w ?? 0,
           imported: row.grid_import_w ?? 0,
@@ -97,7 +99,7 @@ function normalizeRows(rows: Measurement[] | Aggregate[], resolution: string) {
       }
       const aggregate = row as Aggregate;
       return {
-        time: aggregate.period_start_local,
+        time: Date.parse(aggregate.period_start_local),
         solar: aggregate.solar_kwh,
         consumption: aggregate.house_consumption_kwh,
         imported: aggregate.grid_import_kwh,

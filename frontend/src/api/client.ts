@@ -1,6 +1,8 @@
 import type {
   Annotation,
   Device,
+  DaikinLatestResponse,
+  DaikinReadingsResponse,
   DeviceColorUpdate,
   DeviceModeUpdate,
   DeviceState,
@@ -36,6 +38,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   latest: () => request<LatestResponse>("/latest"),
   status: () => request<SystemStatus>("/system/status"),
+  daikinLatest: () => request<DaikinLatestResponse>("/climate/daikin/latest"),
+  daikinReadings: (range: string) => request<DaikinReadingsResponse>(`/climate/daikin/readings?${range}&limit=20000`),
   measurements: (resolution: string, range: string) =>
     request<MeasurementsResponse>(`/measurements?resolution=${resolution}&${range}`),
   rawLatest: () => request<RawPayload>("/measurements/raw/latest"),

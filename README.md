@@ -18,6 +18,8 @@ API: `http://localhost:8000/api/v1/docs`
 
 La configuracion inicial usa `SIMULATION_MODE=true`, por lo que arranca sin acceso al medidor fisico.
 
+El dashboard y la API se publican para la red local; PostgreSQL queda solo dentro de la red interna de Docker. No abras el puerto 5432 en el router.
+
 ## Medidor real
 
 Edita `.env`:
@@ -42,6 +44,22 @@ Aplica cambios:
 ```
 
 Si `values.xml` responde vacio (`<values />`), la app ahora intenta descubrir ids adicionales desde `devices.xml`. Si aun asi no aparecen `pac1`, `pac2` y `fpot1`, el medidor esta exponiendo otro endpoint o un id distinto.
+
+## Aires Daikin ONECTA
+
+La pagina **Clima Daikin** consulta las lecturas de solo lectura de ONECTA, guarda una muestra cada cinco minutos y muestra temperaturas interior/exterior, consigna, modo, estado, energia de calefaccion/refrigeracion y su historico. ONECTA informa energia en kWh por periodos; la potencia instantanea de la vivienda sigue viniendo del Wibeee.
+
+Configura estas variables en el `.env` del servidor y activa el worker:
+
+```env
+FEATURE_DAIKIN=true
+DAIKIN_CLIENT_ID=...
+DAIKIN_CLIENT_SECRET=...
+DAIKIN_REFRESH_TOKEN=...
+DAIKIN_POLL_INTERVAL_SECONDS=300
+```
+
+El refresh token inicial se sustituye automáticamente por las rotaciones de ONECTA y queda en el volumen Docker `daikin_data`. Protege el `.env` del servidor como una credencial y no lo subas a Git. Las lecturas históricas empiezan a guardarse al activar el worker; la integración no enciende, apaga ni cambia los aires.
 
 ## Recuperar Wibeee por AP
 

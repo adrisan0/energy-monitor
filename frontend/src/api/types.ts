@@ -57,6 +57,42 @@ export interface MeasurementsResponse {
   data: Measurement[] | Aggregate[];
 }
 
+export interface DaikinEnergyPeriod {
+  unit: string | null;
+  heating_kwh: number[];
+  cooling_kwh: number[];
+  heating_total_kwh: number;
+  cooling_total_kwh: number;
+}
+
+export interface DaikinReading {
+  id: number;
+  captured_at_utc: string;
+  device_id: string;
+  device_name: string;
+  model: string | null;
+  is_on: boolean | null;
+  operating_mode: string | null;
+  fan_mode: string | null;
+  room_temperature_c: number | null;
+  outdoor_temperature_c: number | null;
+  target_temperature_c: number | null;
+  heating_today_kwh: number | null;
+  cooling_today_kwh: number | null;
+  energy_profiles: Record<string, DaikinEnergyPeriod>;
+  in_error_state: boolean | null;
+  in_warning_state: boolean | null;
+}
+
+export interface DaikinLatestResponse {
+  configured: boolean;
+  data: DaikinReading[];
+}
+
+export interface DaikinReadingsResponse {
+  data: DaikinReading[];
+}
+
 export interface RawPayload {
   id: number;
   timestamp_utc: string;

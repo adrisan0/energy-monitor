@@ -7,7 +7,7 @@ from typing import Annotated, Any, Awaitable, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import desc, select, text
+from sqlalchemy import and_, desc, func, select, text
 from sqlalchemy.orm import Session
 
 from app.analytics.detectors import detect_analysis_events
@@ -19,6 +19,7 @@ from app.integrations.factory import adapter_for_device
 from app.models import (
     ApplianceAnnotation,
     BackupRecord,
+    DaikinReading,
     Device,
     EnergyAggregate,
     MeterSample,
@@ -65,6 +66,46 @@ def latest(db: DbDep) -> LatestResponse:
         meter_online=age <= get_settings().prolonged_outage_seconds and sample.data_quality in {"valid", "partial"},
         seconds_since_last_reading=age,
     )
+
+
+@router.get("/climate/daikin/latest", tags=["climate"])
+def latest_daikin_readings(db: DbDep) -> dict[str, Any]:
+    latest_by_device = (
+        select(DaikinReading.device_id, func.max(DaikinReading.captured_at_utc).label("captured_at_utc"))
+        .group_by(DaikinReading.device_id)
+        .subquery()
+    )
+    rows = db.scalars(
+        select(DaikinReading)
+        .join(
+            latest_by_device,
+            and_(
+                DaikinReading.device_id == latest_by_device.c.device_id,
+                DaikinReading.captured_at_utc == latest_by_device.c.captured_at_utc,
+            ),
+        )
+        .order_by(DaikinReading.device_name.asc())
+    ).all()
+    return {"configured": get_settings().feature_daikin, "data": [_daikin_reading_dict(row, include_profiles=True) for row in rows]}
+
+
+@router.get("/climate/daikin/readings", tags=["climate"])
+def daikin_readings(
+    db: DbDep,
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    device_id: str | None = Query(default=None),
+    limit: int = Query(default=20000, ge=1, le=20000),
+) -> dict[str, Any]:
+    query = select(DaikinReading)
+    if start:
+        query = query.where(DaikinReading.captured_at_utc >= to_utc(start))
+    if end:
+        query = query.where(DaikinReading.captured_at_utc <= to_utc(end))
+    if device_id:
+        query = query.where(DaikinReading.device_id == device_id)
+    rows = db.scalars(query.order_by(desc(DaikinReading.captured_at_utc)).limit(limit)).all()
+    return {"data": [_daikin_reading_dict(row, include_profiles=False) for row in rows]}
 
 
 @router.get("/measurements", tags=["measurements"])
@@ -408,6 +449,7 @@ def system_status(db: DbDep) -> SystemStatus:
             "automations": settings.feature_automations,
             "telegram": settings.feature_telegram,
             "smart_devices": settings.feature_smart_devices,
+            "daikin": settings.feature_daikin,
         },
         backups_path=str(settings.backup_dir),
     )
@@ -502,6 +544,27 @@ def _percent_float(numerator: Decimal, denominator: Decimal) -> float | None:
 
 def _float(value: Any) -> float | None:
     return None if value is None else float(value)
+
+
+def _daikin_reading_dict(row: DaikinReading, *, include_profiles: bool = False) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "captured_at_utc": row.captured_at_utc,
+        "device_id": row.device_id,
+        "device_name": row.device_name,
+        "model": row.model,
+        "is_on": row.is_on,
+        "operating_mode": row.operating_mode,
+        "fan_mode": row.fan_mode,
+        "room_temperature_c": _float(row.room_temperature_c),
+        "outdoor_temperature_c": _float(row.outdoor_temperature_c),
+        "target_temperature_c": _float(row.target_temperature_c),
+        "heating_today_kwh": _float(row.heating_today_kwh),
+        "cooling_today_kwh": _float(row.cooling_today_kwh),
+        "energy_profiles": row.energy_profiles if include_profiles else {},
+        "in_error_state": row.in_error_state,
+        "in_warning_state": row.in_warning_state,
+    }
 
 
 def _aware(value: datetime | None) -> datetime:

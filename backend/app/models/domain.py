@@ -86,6 +86,29 @@ class EnergyAggregate(Base, TimestampMixin):
     is_complete: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class DaikinReading(Base):
+    """Read-only snapshot of one ONECTA climate unit."""
+
+    __tablename__ = "daikin_readings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    captured_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    device_id: Mapped[str] = mapped_column(String(160), index=True, nullable=False)
+    device_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    is_on: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    operating_mode: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fan_mode: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    room_temperature_c: Mapped[Decimal | None] = mapped_column(Numeric(8, 3), nullable=True)
+    outdoor_temperature_c: Mapped[Decimal | None] = mapped_column(Numeric(8, 3), nullable=True)
+    target_temperature_c: Mapped[Decimal | None] = mapped_column(Numeric(8, 3), nullable=True)
+    heating_today_kwh: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    cooling_today_kwh: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    energy_profiles: Mapped[dict[str, Any]] = json_column()
+    in_error_state: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    in_warning_state: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
 class TariffSettings(Base, TimestampMixin):
     __tablename__ = "tariff_settings"
 

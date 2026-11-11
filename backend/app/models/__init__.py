@@ -1,6 +1,7 @@
 from app.models.domain import (
     ApplianceAnnotation,
     BackupRecord,
+    DaikinReading,
     Device,
     EnergyAggregate,
     MeterSample,
@@ -11,6 +12,7 @@ from app.models.domain import (
 __all__ = [
     "ApplianceAnnotation",
     "BackupRecord",
+    "DaikinReading",
     "Device",
     "EnergyAggregate",
     "MeterSample",

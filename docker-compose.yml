@@ -11,8 +11,6 @@ services:
       TZ: ${TIMEZONE:-Europe/Madrid}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-energy} -d ${POSTGRES_DB:-energy}"]
       interval: 10s
@@ -51,6 +49,7 @@ services:
       FEATURE_AUTOMATIONS: ${FEATURE_AUTOMATIONS:-false}
       FEATURE_TELEGRAM: ${FEATURE_TELEGRAM:-false}
       FEATURE_SMART_DEVICES: ${FEATURE_SMART_DEVICES:-false}
+      FEATURE_DAIKIN: ${FEATURE_DAIKIN:-false}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_BOT_TOKENS: ${TELEGRAM_BOT_TOKENS:-}
       TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
@@ -109,6 +108,16 @@ services:
       FEATURE_AUTOMATIONS: ${FEATURE_AUTOMATIONS:-false}
       FEATURE_TELEGRAM: ${FEATURE_TELEGRAM:-false}
       FEATURE_SMART_DEVICES: ${FEATURE_SMART_DEVICES:-false}
+      FEATURE_DAIKIN: ${FEATURE_DAIKIN:-false}
+      DAIKIN_API_BASE_URL: ${DAIKIN_API_BASE_URL:-https://api.onecta.daikineurope.com/v1}
+      DAIKIN_TOKEN_URL: ${DAIKIN_TOKEN_URL:-https://idp.onecta.daikineurope.com/v1/oidc/token}
+      DAIKIN_CLIENT_ID: ${DAIKIN_CLIENT_ID:-}
+      DAIKIN_CLIENT_SECRET: ${DAIKIN_CLIENT_SECRET:-}
+      DAIKIN_REFRESH_TOKEN: ${DAIKIN_REFRESH_TOKEN:-}
+      DAIKIN_TOKEN_FILE: /daikin-data/credentials.json
+      DAIKIN_POLL_INTERVAL_SECONDS: ${DAIKIN_POLL_INTERVAL_SECONDS:-300}
+      DAIKIN_TIMEOUT_SECONDS: ${DAIKIN_TIMEOUT_SECONDS:-15}
+      DAIKIN_MIN_REQUEST_INTERVAL_SECONDS: ${DAIKIN_MIN_REQUEST_INTERVAL_SECONDS:-1}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_BOT_TOKENS: ${TELEGRAM_BOT_TOKENS:-}
       TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
@@ -120,6 +129,8 @@ services:
       HOME_ASSISTANT_TOKEN: ${HOME_ASSISTANT_TOKEN:-}
       HOME_ASSISTANT_TIMEOUT_SECONDS: ${HOME_ASSISTANT_TIMEOUT_SECONDS:-10}
       HOME_ASSISTANT_VERIFY_SSL: ${HOME_ASSISTANT_VERIFY_SSL:-true}
+    volumes:
+      - daikin_data:/daikin-data
     depends_on:
       backend:
         condition: service_healthy
@@ -179,3 +190,4 @@ services:
 volumes:
   postgres_data:
   backups_data:
+  daikin_data:

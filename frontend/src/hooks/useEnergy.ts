@@ -17,6 +17,22 @@ export function useSystemStatus() {
   });
 }
 
+export function useDaikinLatest() {
+  return useQuery({
+    queryKey: ["daikin-latest"],
+    queryFn: api.daikinLatest,
+    refetchInterval: 60_000
+  });
+}
+
+export function useDaikinReadings(range: string) {
+  return useQuery({
+    queryKey: ["daikin-readings", range],
+    queryFn: () => api.daikinReadings(range),
+    refetchInterval: 60_000
+  });
+}
+
 export function useMeasurements(resolution: string, range: string) {
   return useQuery({
     queryKey: ["measurements", resolution, range],

@@ -62,21 +62,24 @@ export default function GraphsPage() {
 
       <section className="panel p-4">
         <h3 className="mb-3 text-base font-semibold">Potencias y energia</h3>
-        <EChart option={line} height={390} />
+        {measurements.isPending ? <p className="text-sm text-slate-500">Cargando lecturas…</p> : null}
+        {measurements.isError ? <p role="alert" className="text-sm text-rose-500">No se pudieron cargar las lecturas: {measurements.error.message}</p> : null}
+        {!measurements.isPending && !measurements.isError && rows.length === 0 ? <p className="text-sm text-slate-500">No hay lecturas en este periodo.</p> : null}
+        {rows.length > 0 ? <EChart option={line} height={390} /> : null}
       </section>
 
       <section className="grid gap-5 xl:grid-cols-2">
         <div className="panel p-4">
           <h3 className="mb-3 text-base font-semibold">Area temporal de flujos</h3>
-          <EChart option={area} />
+          {rows.length > 0 ? <EChart option={area} /> : <p className="text-sm text-slate-500">Sin datos para dibujar.</p>}
         </div>
         <div className="panel p-4">
           <h3 className="mb-3 text-base font-semibold">Barras por hora</h3>
-          <EChart option={bars} />
+          {rows.length > 0 ? <EChart option={bars} /> : <p className="text-sm text-slate-500">Sin datos para dibujar.</p>}
         </div>
         <div className="panel p-4">
           <h3 className="mb-3 text-base font-semibold">Heatmap hora y dia</h3>
-          <EChart option={heatmap} />
+          {rows.length > 0 ? <EChart option={heatmap} /> : <p className="text-sm text-slate-500">Sin datos para dibujar.</p>}
         </div>
         <div className="panel p-4">
           <h3 className="mb-3 text-base font-semibold">Eventos y anomalias</h3>

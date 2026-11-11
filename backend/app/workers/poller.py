@@ -12,6 +12,7 @@ from app.core.logging import get_logger, setup_logging
 from app.core.timezone import db_utc, utc_now
 from app.db.session import get_session_factory, init_engine
 from app.models import MeterSample, SystemEvent
+from app.services.daikin_cloud import DaikinCloudReader
 from app.services.device_automation import apply_automation_for_sample, apply_meter_outage_failsafe
 from app.services.events import record_event
 from app.services.meter_client import fetch_meter_payload
@@ -130,6 +131,8 @@ async def run_forever() -> None:
     logger.info("worker_started", extra={"simulation_mode": settings.simulation_mode})
     if settings.feature_telegram:
         asyncio.create_task(run_telegram_bot_forever())
+    if settings.feature_daikin:
+        asyncio.create_task(run_daikin_poll_forever())
 
     while True:
         with get_session_factory()() as db:
@@ -143,6 +146,27 @@ async def run_forever() -> None:
             sleep_for = min(settings.meter_poll_interval_seconds, 5 * (2 ** min(failures, 5)))
             sleep_for += random.uniform(0, 1)
         await asyncio.sleep(sleep_for)
+
+
+async def run_daikin_poll_forever() -> None:
+    settings = get_settings()
+    reader = DaikinCloudReader(settings)
+    failures = 0
+    try:
+        while True:
+            try:
+                with get_session_factory()() as db:
+                    count = await reader.poll(db)
+                failures = 0
+                logger.info("daikin_readings_stored", extra={"device_count": count})
+                sleep_for = settings.daikin_poll_interval_seconds
+            except Exception:  # noqa: BLE001 - keep the main worker alive if cloud polling fails
+                failures += 1
+                logger.exception("daikin_poll_failed")
+                sleep_for = min(settings.daikin_poll_interval_seconds, 60 * (2 ** min(failures, 4)))
+            await asyncio.sleep(sleep_for + random.uniform(0, 2))
+    finally:
+        await reader.close()
 
 
 def main() -> None:

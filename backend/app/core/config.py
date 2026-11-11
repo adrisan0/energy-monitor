@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     feature_automations: bool = False
     feature_telegram: bool = False
     feature_smart_devices: bool = False
+    feature_daikin: bool = False
     telegram_bot_token: str | None = None
     telegram_bot_tokens: str = ""
     telegram_allowed_chat_ids: str = ""
@@ -54,6 +55,16 @@ class Settings(BaseSettings):
     home_assistant_token: str | None = None
     home_assistant_timeout_seconds: int = Field(default=10, ge=1)
     home_assistant_verify_ssl: bool = True
+
+    daikin_api_base_url: str = "https://api.onecta.daikineurope.com/v1"
+    daikin_token_url: str = "https://idp.onecta.daikineurope.com/v1/oidc/token"
+    daikin_client_id: str | None = None
+    daikin_client_secret: str | None = None
+    daikin_refresh_token: str | None = None
+    daikin_token_file: Path = Path("/daikin-data/credentials.json")
+    daikin_poll_interval_seconds: int = Field(default=300, ge=60)
+    daikin_timeout_seconds: float = Field(default=15.0, gt=0)
+    daikin_min_request_interval_seconds: float = Field(default=1.0, ge=0)
 
     backup_dir: Path = Path("/backups")
     backup_retention_days: int = Field(default=30, ge=1)
