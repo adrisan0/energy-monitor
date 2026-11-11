@@ -5,7 +5,6 @@ import type { EChartsOption } from "echarts";
 import { api } from "../api/client";
 import type { Aggregate, DaikinReading, Device, Measurement, SmartPlugReading, Tariff } from "../api/types";
 import EChart from "../components/EChart";
-import { flowAreaOption, heatmapOption, hourlyBarOption } from "../charts/options";
 import { useDaikinReadings, useDevices, useMeasurements, useSmartPlugReadings } from "../hooks/useEnergy";
 import { adjustPowerSeries, detectAccumulatorCycles, type AccumulatorCycle } from "../analytics/accumulators";
 import { formatMoney, formatW, rangeQuery } from "../utils/format";
@@ -15,7 +14,7 @@ const ranges = [
   ["week", "Semana"], ["month", "Mes"], ["year", "Año"]
 ];
 type PeriodFilter = "all" | "day" | "night";
-type GraphMode = "power" | "cost";
+type GraphMode = "power" | "energy" | "cost";
 interface SourcePoint {
   time: number;
   total: number;
@@ -28,13 +27,20 @@ interface SourcePoint {
   imported: number;
 }
 interface CostPoint extends SourcePoint {
-  costTotal: number;
-  costPc: number;
-  costDaikin: number;
-  costSmall: number;
-  costLarge: number;
-  costCombined: number;
-  costOther: number;
+  energyTotal: number | null;
+  energyPc: number | null;
+  energyDaikin: number | null;
+  energySmall: number | null;
+  energyLarge: number | null;
+  energyCombined: number | null;
+  energyOther: number | null;
+  costTotal: number | null;
+  costPc: number | null;
+  costDaikin: number | null;
+  costSmall: number | null;
+  costLarge: number | null;
+  costCombined: number | null;
+  costOther: number | null;
 }
 type SelectedRange = { start: number; end: number } | null;
 
@@ -52,7 +58,6 @@ export default function GraphsPage() {
   const tariffQuery = useQuery({ queryKey: ["tariff"], queryFn: api.tariff, refetchInterval: 300_000 });
   const sonoff = useMemo(() => findComputerPlug(devices.data ?? []), [devices.data]);
   const computer = useSmartPlugReadings(sonoff?.id ?? null, query);
-  const events = useQuery({ queryKey: ["events"], queryFn: api.events, refetchInterval: 60_000 });
   const rows = (measurements.data?.data ?? []) as Measurement[] | Aggregate[];
   const rawRows = resolution === "raw" ? rows as Measurement[] : [];
   const periodRows = useMemo(() => {
@@ -77,14 +82,14 @@ export default function GraphsPage() {
     if (!selection) return null;
     return costPoints.reduce((sum, point, index) => {
       const before = costPoints[index - 1];
-      if (!before || before.time < selection.start || point.time > selection.end) return sum;
-      return sum + Math.max(0, point.costTotal - before.costTotal);
+      if (!before || before.time < selection.start || point.time > selection.end || point.costTotal == null) return sum;
+      return sum + point.costTotal;
     }, 0);
   }, [selection, costPoints]);
 
   const line = useMemo<EChartsOption>(() => {
-    if (resolution !== "raw") return aggregateOption(aggregatePoints, mode, period, tariff);
-    return sourceOption(costPoints, mode, selecting, period);
+    if (resolution !== "raw") return aggregateOption(aggregatePoints, mode);
+    return sourceOption(costPoints, mode, selecting);
   }, [aggregatePoints, costPoints, mode, period, resolution, selecting, tariff]);
   const brushEvents = useMemo(() => ({
     brushSelected: (event: unknown) => {
@@ -97,9 +102,6 @@ export default function GraphsPage() {
       if (first && last) setSelection({ start: first.time, end: last.time });
     }
   }), [costPoints]);
-  const area = useMemo(() => flowAreaOption(periodRows, resolution), [periodRows, resolution]);
-  const bars = useMemo(() => hourlyBarOption(periodRows, resolution), [periodRows, resolution]);
-  const heatmap = useMemo(() => heatmapOption(periodRows, resolution), [periodRows, resolution]);
   const selectedLabel = selection ? `${new Date(selection.start).toLocaleString("es-ES")} – ${new Date(selection.end).toLocaleString("es-ES")}` : "";
 
   return (
@@ -127,6 +129,7 @@ export default function GraphsPage() {
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-md border p-1" role="group" aria-label="Magnitud de gráfica">
               <button type="button" aria-pressed={mode === "power"} onClick={() => setMode("power")} className={`rounded px-3 py-1.5 text-sm ${mode === "power" ? "bg-slate-900 text-white dark:bg-white dark:text-slate-950" : ""}`}>Potencia · W</button>
+              <button type="button" aria-pressed={mode === "energy"} onClick={() => setMode("energy")} className={`rounded px-3 py-1.5 text-sm ${mode === "energy" ? "bg-slate-900 text-white dark:bg-white dark:text-slate-950" : ""}`}>Energía · kWh</button>
               <button type="button" aria-pressed={mode === "cost"} onClick={() => setMode("cost")} className={`rounded px-3 py-1.5 text-sm ${mode === "cost" ? "bg-slate-900 text-white dark:bg-white dark:text-slate-950" : ""}`}>Coste · €</button>
             </div>
             <select className="field" value={resolution} onChange={(event) => { setResolution(event.target.value); setSelection(null); }}>
@@ -139,7 +142,7 @@ export default function GraphsPage() {
       <section className="panel p-4">
         <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="text-base font-semibold">{mode === "power" ? "Potencia por procedencia" : "Coste acumulado por procedencia"}</h3>
+            <h3 className="text-base font-semibold">{mode === "power" ? "Potencia por procedencia" : mode === "energy" ? "Energía por procedencia" : "Coste por procedencia"}</h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">{resolution === "raw" ? "Total Wibeee y cargas separadas: Sonoff medido, Daikin estimado y acumuladores inferidos." : "En resoluciones agregadas se muestra el total; la separación por aparato requiere lecturas crudas."}</p>
           </div>
           <div className="flex items-center gap-2">
@@ -166,15 +169,6 @@ export default function GraphsPage() {
         {!tariff ? <p className="mt-2 text-xs text-amber-700">Cargando precios configurados de la tarifa…</p> : <p className="mt-2 text-xs text-slate-500">Los importes se leen de Ajustes de tarifa; actualízalos allí cuando cambie tu contrato.</p>}
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-2">
-        <div className="panel p-4"><h3 className="mb-3 text-base font-semibold">Área temporal de flujos</h3>{rows.length ? <EChart option={area} /> : <p className="text-sm text-slate-500">Sin datos para dibujar.</p>}</div>
-        <div className="panel p-4"><h3 className="mb-3 text-base font-semibold">Barras por hora</h3>{rows.length ? <EChart option={bars} /> : <p className="text-sm text-slate-500">Sin datos para dibujar.</p>}</div>
-        <div className="panel p-4"><h3 className="mb-3 text-base font-semibold">Heatmap hora y día</h3>{rows.length ? <EChart option={heatmap} /> : <p className="text-sm text-slate-500">Sin datos para dibujar.</p>}</div>
-        <div className="panel p-4">
-          <h3 className="mb-3 text-base font-semibold">Eventos y anomalías</h3>
-          <div className="max-h-80 overflow-auto"><table className="w-full text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="py-2">Hora</th><th className="py-2">Evento</th><th className="py-2">Confianza</th></tr></thead><tbody>{(events.data?.analysis ?? []).map((event) => <tr key={`${event.timestamp}-${event.event_type}`} className="border-t border-slate-200 dark:border-white/10"><td className="py-2">{new Date(event.timestamp).toLocaleString("es-ES")}</td><td className="py-2">{event.label}</td><td className="py-2">{event.confidence}</td></tr>)}</tbody></table></div>
-        </div>
-      </section>
     </div>
   );
 }
@@ -202,63 +196,72 @@ function buildSourcePoints(rows: Measurement[], computerRows: SmartPlugReading[]
 }
 
 function buildCostPoints(points: SourcePoint[], tariff?: Tariff): CostPoint[] {
-  let totals = { total: 0, pc: 0, daikin: 0, small: 0, large: 0, combined: 0, other: 0 };
   return points.map((point, index) => {
     const before = points[index - 1];
-    if (before) {
-      const elapsed = point.time - before.time;
-      if (elapsed > 0 && elapsed <= 180_000 && tariff) {
-        const hours = elapsed / 3_600_000;
-        const rate = priceAt(tariff, (point.time + before.time) / 2);
-        const component = (a: number, b: number) => ((a + b) / 2 / 1000) * hours * rate;
-        totals = {
-          total: totals.total + component(before.total, point.total),
-          pc: totals.pc + component(before.pc, point.pc), daikin: totals.daikin + component(before.daikin, point.daikin),
-          small: totals.small + component(before.small, point.small), large: totals.large + component(before.large, point.large),
-          combined: totals.combined + component(before.combined, point.combined), other: totals.other + component(before.other, point.other)
-        };
-      }
-    }
-    return { ...point, costTotal: totals.total, costPc: totals.pc, costDaikin: totals.daikin, costSmall: totals.small, costLarge: totals.large, costCombined: totals.combined, costOther: totals.other };
+    const elapsed = before ? point.time - before.time : 0;
+    const valid = Boolean(before && tariff && elapsed > 0 && elapsed <= 180_000);
+    const hours = valid ? elapsed / 3_600_000 : 0;
+    const rate = valid && tariff ? priceAt(tariff, (point.time + before!.time) / 2) : 0;
+    const energy = (a: number, b: number) => valid ? ((a + b) / 2 / 1000) * hours : null;
+    const cost = (a: number, b: number) => {
+      const kwh = energy(a, b);
+      return kwh == null ? null : kwh * rate;
+    };
+    return {
+      ...point,
+      energyTotal: energy(before?.total ?? point.total, point.total), energyPc: energy(before?.pc ?? point.pc, point.pc),
+      energyDaikin: energy(before?.daikin ?? point.daikin, point.daikin), energySmall: energy(before?.small ?? point.small, point.small),
+      energyLarge: energy(before?.large ?? point.large, point.large), energyCombined: energy(before?.combined ?? point.combined, point.combined),
+      energyOther: energy(before?.other ?? point.other, point.other),
+      costTotal: cost(before?.total ?? point.total, point.total), costPc: cost(before?.pc ?? point.pc, point.pc),
+      costDaikin: cost(before?.daikin ?? point.daikin, point.daikin), costSmall: cost(before?.small ?? point.small, point.small),
+      costLarge: cost(before?.large ?? point.large, point.large), costCombined: cost(before?.combined ?? point.combined, point.combined),
+      costOther: cost(before?.other ?? point.other, point.other)
+    };
   });
 }
 
 function buildAggregatePoints(rows: Array<Measurement | Aggregate>, resolution: string, period: PeriodFilter) {
   if (resolution === "raw") return [];
   return rows.map((row) => row as Aggregate).filter((row) => matchesPeriod(Date.parse(row.period_start_local), period)).map((row) => ({
-    time: Date.parse(row.period_start_local), energy: row.house_consumption_kwh,
+    time: Date.parse(row.period_start_local), energy: row.house_consumption_kwh, maxPower: row.max_power_w,
     cost: row.estimated_cost_eur, label: row.period_start_local
   }));
 }
 
-function sourceOption(points: CostPoint[], mode: GraphMode, selecting: boolean, period: PeriodFilter): EChartsOption {
-  const cost = mode === "cost";
+function sourceOption(points: CostPoint[], mode: GraphMode, selecting: boolean): EChartsOption {
   const series = [
-    ["Ordenador · Sonoff medido", cost ? "costPc" : "pc"], ["Daikin · estimado", cost ? "costDaikin" : "daikin"],
-    ["Acumulador dormitorio · inferido", cost ? "costSmall" : "small"], ["Acumulador comedor · inferido", cost ? "costLarge" : "large"],
-    ["Acumuladores · combinado", cost ? "costCombined" : "combined"], ["Resto · sin atribuir", cost ? "costOther" : "other"]
+    ["Ordenador · Sonoff medido", "pc", "energyPc", "costPc"], ["Daikin · estimado", "daikin", "energyDaikin", "costDaikin"],
+    ["Acumulador dormitorio · inferido", "small", "energySmall", "costSmall"], ["Acumulador comedor · inferido", "large", "energyLarge", "costLarge"],
+    ["Acumuladores · combinado", "combined", "energyCombined", "costCombined"], ["Resto · sin atribuir", "other", "energyOther", "costOther"]
   ] as const;
   const color = ["#10b981", "#8b5cf6", "#f59e0b", "#ef4444", "#a855f7", "#64748b"];
-  const seriesOptions: NonNullable<EChartsOption["series"]> = series.map(([name, key], index) => ({ name, type: "line" as const, stack: "loads", areaStyle: { opacity: 0.35 }, showSymbol: false, connectNulls: false, lineStyle: { width: 1.2 }, data: points.map((point) => [point.time, point[key]]), itemStyle: { color: color[index] } }));
-  seriesOptions.push({ name: cost ? "Total vivienda · coste estimado" : "Total vivienda · Wibeee medido", type: "line", showSymbol: false, connectNulls: false, lineStyle: { width: 2.5, type: "solid" }, data: points.map((point) => [point.time, cost ? point.costTotal : point.total]), itemStyle: { color: "#38bdf8" } });
+  const valueKey = (field: (typeof series)[number]) => mode === "power" ? field[1] : mode === "energy" ? field[2] : field[3];
+  const totalValue = (point: CostPoint) => mode === "power" ? point.total : mode === "energy" ? point.energyTotal : point.costTotal;
+  const unit = mode === "power" ? "W" : mode === "energy" ? "kWh" : "€";
+  const seriesOptions: NonNullable<EChartsOption["series"]> = series.map((field, index) => ({ name: field[0], type: "bar", stack: "loads", barMaxWidth: 24, data: points.map((point) => [point.time, point[valueKey(field)]]), itemStyle: { color: color[index] } }));
+  seriesOptions.push({ name: "Consumo total · Wibeee", type: "line", showSymbol: false, connectNulls: false, lineStyle: { width: 2.5, type: "solid" }, data: points.map((point) => [point.time, totalValue(point)]), itemStyle: { color: "#38bdf8" } });
   return {
-    color, tooltip: { trigger: "axis", valueFormatter: (value) => cost ? formatMoney(Number(value)) : formatW(Number(value)) },
+    color, tooltip: { trigger: "axis", valueFormatter: (value) => mode === "power" ? formatW(Number(value)) : mode === "energy" ? `${Number(value).toFixed(4)} kWh` : formatMoney(Number(value)) },
     legend: { top: 0, textStyle: { color: "#cbd5e1" } }, grid: { top: 52, left: 75, right: 20, bottom: 70 },
     toolbox: { feature: { dataZoom: {}, saveAsImage: {} } }, dataZoom: [{ type: "inside" }, { type: "slider", height: 24 }],
     brush: selecting ? { brushType: "lineX", xAxisIndex: 0, brushMode: "single", transformable: false } : { brushType: false },
     xAxis: { type: "time", axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
-    yAxis: { type: "value", name: cost ? "Coste acumulado · €" : "Potencia · W", min: 0, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
+    yAxis: { type: "value", name: mode === "cost" ? "Coste por intervalo · €" : mode === "energy" ? "Energía por intervalo · kWh" : `Potencia · ${unit}`, min: 0, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
     series: seriesOptions
   };
 }
 
-function aggregateOption(points: ReturnType<typeof buildAggregatePoints>, mode: GraphMode, period: PeriodFilter, tariff?: Tariff): EChartsOption {
+function aggregateOption(points: ReturnType<typeof buildAggregatePoints>, mode: GraphMode): EChartsOption {
   const isCost = mode === "cost";
+  const isPower = mode === "power";
+  const value = (point: ReturnType<typeof buildAggregatePoints>[number]) => isCost ? point.cost : isPower ? point.maxPower : point.energy;
+  const name = isCost ? "Coste variable" : isPower ? "Potencia máxima" : "Consumo total";
   return {
-    tooltip: { trigger: "axis", valueFormatter: (value) => isCost ? formatMoney(Number(value)) : `${Number(value).toFixed(3)} kWh` },
+    tooltip: { trigger: "axis", valueFormatter: (item) => isCost ? formatMoney(Number(item)) : isPower ? formatW(Number(item)) : `${Number(item).toFixed(3)} kWh` },
     legend: { top: 0 }, grid: { top: 48, left: 70, right: 20, bottom: 60 }, dataZoom: [{ type: "inside" }, { type: "slider", height: 22 }],
-    xAxis: { type: "time", axisLabel: { color: "#94a3b8" } }, yAxis: { type: "value", name: isCost ? "Coste variable estimado · €" : "Consumo · kWh", min: 0 },
-    series: [{ name: isCost ? "Coste total" : "Consumo total", type: "line", showSymbol: false, areaStyle: { opacity: 0.2 }, data: points.map((point) => [point.time, isCost ? point.cost : point.energy]) }]
+    xAxis: { type: "time", axisLabel: { color: "#94a3b8" } }, yAxis: { type: "value", name: isCost ? "Coste variable estimado · €" : isPower ? "Potencia máxima · W" : "Consumo · kWh", min: 0 },
+    series: [{ name, type: "bar", barMaxWidth: 24, data: points.map((point) => [point.time, value(point)]) }]
   };
 }
 

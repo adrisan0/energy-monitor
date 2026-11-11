@@ -1,10 +1,14 @@
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { EChartsOption } from "echarts";
 import EChart from "../components/EChart";
-import type { Device, Measurement } from "../api/types";
+import { api } from "../api/client";
+import type { Device, Measurement, Tariff } from "../api/types";
 import { useDaikinLatest, useDaikinReadings, useDevices, useMeasurements, useSmartPlugReadings } from "../hooks/useEnergy";
 import { adjustPowerSeries, detectAccumulatorCycles, type AccumulatorCycle, type AdjustedPowerSample } from "../analytics/accumulators";
-import { formatKwh, formatW } from "../utils/format";
+import { formatKwh, formatMoney, formatW } from "../utils/format";
+
+type ChartMode = "power" | "energy" | "cost";
 
 export default function AccumulatorsPage() {
   const range = useMemo(() => monthToNow(), []);
@@ -12,6 +16,7 @@ export default function AccumulatorsPage() {
   const devices = useDevices();
   const daikinLatest = useDaikinLatest();
   const daikinHistory = useDaikinReadings(range);
+  const tariff = useQuery({ queryKey: ["tariff"], queryFn: api.tariff, refetchInterval: 300_000 });
   const sonoffs = (devices.data ?? []).filter((device) => device.active && device.measurement_capable && device.config?.adapter === "sonoff_s61s");
   const computerPlug = sonoffs.find((device) => /ordenador|computador|computer|pc/i.test(device.name)) ?? (sonoffs.length === 1 ? sonoffs[0] : null);
   const computerHistory = useSmartPlugReadings(computerPlug?.id ?? null, range);
@@ -20,14 +25,15 @@ export default function AccumulatorsPage() {
   const daikinRows = daikinHistory.data?.data ?? [];
   const correctedSeries = useMemo(() => adjustPowerSeries(rows, computerRows, daikinRows), [rows, computerRows, daikinRows]);
   const cycles = useMemo(() => detectAccumulatorCycles(rows, computerRows, daikinRows, computerPlug != null, daikinLatest.data?.configured ?? false), [rows, computerRows, daikinRows, computerPlug, daikinLatest.data?.configured]);
-  const nights = useMemo(() => [...new Set(cycles.map((cycle) => cycle.startNight))].sort(), [cycles]);
+  const nights = useMemo(() => availableNights(rows), [rows]);
   const [selectedNight, setSelectedNight] = useState("");
+  const [chartMode, setChartMode] = useState<ChartMode>("power");
   const night = nights.includes(selectedNight) ? selectedNight : nights.at(-1) ?? "";
   const nightCycles = cycles.filter((cycle) => cycle.startNight === night);
   const smallCycles = nightCycles.filter((cycle) => cycle.category === "small");
   const largeCycles = nightCycles.filter((cycle) => cycle.category === "large");
   const points = night ? selectNightSamples(correctedSeries, night) : [];
-  const chart = useMemo(() => buildNightChart(points, nightCycles), [points, nightCycles]);
+  const chart = useMemo(() => buildNightChart(points, nightCycles, chartMode, tariff.data), [points, nightCycles, chartMode, tariff.data]);
   const smallKwh = smallCycles.reduce((sum, cycle) => sum + cycle.energyKwh, 0);
   const largeKwh = largeCycles.reduce((sum, cycle) => sum + cycle.energyKwh, 0);
   const partialRows = rows.filter((row) => row.data_quality === "partial").length;
@@ -42,7 +48,7 @@ export default function AccumulatorsPage() {
           <p className="text-sm text-slate-500 dark:text-slate-400">Ciclos probables inferidos del consumo total de la vivienda</p>
         </div>
         <label className="flex flex-col gap-1 text-sm">
-          <span className="label">Noche</span>
+          <span className="label">Noche con lecturas · {nights.length}</span>
           <select className="field min-w-56" value={night} onChange={(event) => setSelectedNight(event.target.value)} disabled={!nights.length}>
             {nights.length ? nights.map((item) => <option key={item} value={item}>{nightLabel(item)}</option>) : <option value="">Sin ciclos detectados</option>}
           </select>
@@ -71,11 +77,16 @@ export default function AccumulatorsPage() {
       </section>
 
       <section className="panel p-4">
-        <div className="mb-3">
-          <h3 className="text-base font-semibold">Perfil de potencia · {night ? nightLabel(night) : "sin noche seleccionada"}</h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400">Línea azul: potencia de la vivienda. Línea discontinua: resto estimado tras descontar Sonoff y la potencia media inferida de Daikin cuando hay lecturas fiables. Las bandas marcan ciclos candidatos.</p>
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+          <div>
+          <h3 className="text-base font-semibold">Perfil de {chartMode === "power" ? "potencia" : chartMode === "energy" ? "energía" : "coste"} · {night ? nightLabel(night) : "sin noche seleccionada"}</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Azul: vivienda total medida. Morado: resto estimado tras descontar Sonoff y Daikin cuando hay datos fiables. Las bandas marcan ciclos candidatos; energía y coste se integran entre lecturas separadas por hasta 3 min.</p>
+          </div>
+          <div className="flex rounded-md border p-1" role="group" aria-label="Magnitud del perfil">
+            {([ ["power", "Potencia · W"], ["energy", "Energía · kWh"], ["cost", "Coste · €"] ] as Array<[ChartMode, string]>).map(([mode, label]) => <button key={mode} type="button" aria-pressed={chartMode === mode} onClick={() => setChartMode(mode)} className={`rounded px-3 py-1.5 text-sm ${chartMode === mode ? "bg-slate-900 text-white dark:bg-white dark:text-slate-950" : ""}`}>{label}</button>)}
+          </div>
         </div>
-        {nightCycles.length && points.length ? <EChart option={chart} height={390} /> : <p className="py-10 text-center text-sm text-slate-500">Todavía no hay ciclos emparejados en esta noche.</p>}
+        {points.length ? <EChart option={chart} height={390} /> : <p className="py-10 text-center text-sm text-slate-500">No hay lecturas del medidor en esta franja nocturna.</p>}
       </section>
 
       <section className="panel overflow-hidden p-4">
@@ -94,7 +105,7 @@ export default function AccumulatorsPage() {
       </section>
 
       <aside className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
-        <strong>Cómo leerlo:</strong> el histórico principal viene del Wibeee. El ordenador se corrige con su potencia Sonoff medida; Daikin se contrasta con sus estados y los incrementos de energía ONECTA. Los ciclos siguen siendo candidatos —no mediciones individuales de los acumuladores— y se buscan entre las 18:00 y las 10:00, sin exigir una hora fija de arranque.
+        <strong>Cómo leerlo:</strong> puedes elegir cualquier noche con lecturas, aunque no se hayan detectado acumuladores. El histórico principal viene del Wibeee. El ordenador se corrige con su potencia Sonoff medida; Daikin se contrasta con sus estados y los incrementos de energía ONECTA. Los ciclos siguen siendo candidatos —no mediciones individuales de los acumuladores— y se buscan entre las 18:00 y las 10:00, sin exigir una hora fija de arranque.
       </aside>
     </div>
   );
@@ -106,26 +117,67 @@ function selectNightSamples(rows: AdjustedPowerSample[], night: string): Adjuste
   return rows.filter((row) => row.timestamp >= start && row.timestamp <= end);
 }
 
-function buildNightChart(points: AdjustedPowerSample[], cycles: AccumulatorCycle[]): EChartsOption {
+function availableNights(rows: Measurement[]): string[] {
+  const nights = new Set<string>();
+  rows.forEach((row) => {
+    if (row.house_consumption_w == null) return;
+    const timestamp = Date.parse(row.timestamp_local || row.timestamp_utc);
+    if (!Number.isFinite(timestamp)) return;
+    const date = new Date(timestamp);
+    const hour = date.getHours();
+    if (hour >= 18) nights.add(localDateKey(date));
+    else if (hour < 10) nights.add(localDateKey(new Date(date.getFullYear(), date.getMonth(), date.getDate() - 1)));
+  });
+  return [...nights].sort();
+}
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function buildNightChart(points: AdjustedPowerSample[], cycles: AccumulatorCycle[], mode: ChartMode, tariff?: Tariff): EChartsOption {
   const colors: Record<AccumulatorCycle["category"], string> = { small: "rgba(245, 158, 11, 0.16)", large: "rgba(239, 68, 68, 0.15)", combined: "rgba(139, 92, 246, 0.16)" };
   const bands: Array<[{ name: string; xAxis: number; itemStyle: { color: string } }, { xAxis: number }]> = cycles.map((cycle) => [
     { name: cycleLabel(cycle.category), xAxis: cycle.startMs, itemStyle: { color: colors[cycle.category] } },
     { xAxis: cycle.endMs }
   ]);
+  const values = points.map((point, index) => {
+    if (mode === "power") return { time: point.timestamp, total: point.watts, remainder: point.adjustedW };
+    const previous = points[index - 1];
+    const elapsed = previous ? point.timestamp - previous.timestamp : 0;
+    if (!previous || elapsed <= 0 || elapsed > 180_000 || (mode === "cost" && !tariff)) return { time: point.timestamp, total: null, remainder: null };
+    const hours = elapsed / 3_600_000;
+    const totalKwh = ((previous.watts + point.watts) / 2 / 1000) * hours;
+    const remainderKwh = ((previous.adjustedW + point.adjustedW) / 2 / 1000) * hours;
+    if (mode === "energy") return { time: point.timestamp, total: totalKwh, remainder: remainderKwh };
+    const rate = accumulatorTariffPrice(tariff!, (previous.timestamp + point.timestamp) / 2);
+    return { time: point.timestamp, total: totalKwh * rate, remainder: remainderKwh * rate };
+  });
+  const formatter = (value: unknown) => mode === "power" ? formatW(Number(value)) : mode === "energy" ? formatKwh(Number(value)) : formatMoney(Number(value));
   return {
-    color: ["#38bdf8"],
-    tooltip: { trigger: "axis", valueFormatter: (value) => `${formatW(Number(value))}` },
+    color: ["#38bdf8", "#a78bfa"],
+    tooltip: { trigger: "axis", valueFormatter: formatter },
     legend: { top: 0 },
-    grid: { top: 38, left: 65, right: 20, bottom: 55 },
+    grid: { top: 42, left: 75, right: 20, bottom: 55 },
     dataZoom: [{ type: "inside" }, { type: "slider", height: 20 }],
     xAxis: { type: "time", min: points[0]?.timestamp, axisLabel: { color: "#94a3b8" } },
-    yAxis: { type: "value", name: "Potencia total · W", min: 0, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
+    yAxis: { type: "value", name: mode === "power" ? "Potencia · W" : mode === "energy" ? "Energía por lectura · kWh" : "Coste por lectura · €", min: 0, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
     series: [
-      { name: "Consumo total", type: "line", showSymbol: false, connectNulls: false, lineStyle: { width: 1.2, type: "dashed" }, data: points.map((row) => [row.timestamp, row.watts]) },
-      { name: "Resto estimado", type: "line", showSymbol: false, connectNulls: false, lineStyle: { width: 1.8 }, data: points.map((row) => [row.timestamp, row.adjustedW]) },
+      { name: "Vivienda total · medido", type: "bar", barMaxWidth: 22, data: values.map((row) => [row.time, row.total]) },
+      { name: "Resto tras PC y Daikin · estimado", type: "bar", barMaxWidth: 22, data: values.map((row) => [row.time, row.remainder]) },
       { name: "Ciclos inferidos", type: "line", data: [], markArea: { silent: true, label: { show: true, position: "insideTop", fontSize: 10 }, data: bands } }
     ]
   };
+}
+
+function accumulatorTariffPrice(tariff: Tariff, timestamp: number): number {
+  if (tariff.mode !== "time_of_use") return Number(tariff.flat_price_eur_per_kwh);
+  const date = new Date(timestamp);
+  const hour = date.getHours();
+  if (date.getDay() === 0 || date.getDay() === 6) return Number(tariff.valley_price_eur_per_kwh);
+  if ((hour >= 10 && hour < 14) || (hour >= 18 && hour < 22)) return Number(tariff.peak_price_eur_per_kwh);
+  if ((hour >= 8 && hour < 10) || (hour >= 14 && hour < 18) || (hour >= 22 && hour < 24)) return Number(tariff.shoulder_price_eur_per_kwh);
+  return Number(tariff.valley_price_eur_per_kwh);
 }
 
 function CycleRow({ cycle }: { cycle: AccumulatorCycle }) {
