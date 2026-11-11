@@ -154,7 +154,7 @@ def measurements(
     end: datetime | None = Query(default=None),
     resolution: str = Query(default="raw", pattern="^(raw|minute|hour|day|month|year)$"),
     data_quality: str | None = Query(default=None),
-    limit: int = Query(default=1000, ge=1, le=10000),
+    limit: int = Query(default=1000, ge=1, le=50000),
 ) -> dict[str, Any]:
     if resolution == "raw":
         sample_query = select(MeterSample)
