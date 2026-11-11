@@ -5,7 +5,7 @@ import type { EChartsOption } from "echarts";
 import { api } from "../api/client";
 import type { Aggregate, DaikinReading, Device, Measurement, SmartPlugReading, Tariff } from "../api/types";
 import EChart from "../components/EChart";
-import { useDaikinReadings, useDevices, useMeasurements, useSmartPlugReadings } from "../hooks/useEnergy";
+import { useDaikinReadings, useDeviceState, useDevices, useMeasurements, useSmartPlugReadings } from "../hooks/useEnergy";
 import { adjustPowerSeries, detectAccumulatorCycles, type AccumulatorCycle } from "../analytics/accumulators";
 import { formatMoney, formatW, rangeQuery } from "../utils/format";
 
@@ -23,6 +23,9 @@ interface SourcePoint {
   small: number;
   large: number;
   combined: number;
+  daytimeSmall: number;
+  daytimeLarge: number;
+  daytimeCombined: number;
   other: number;
   imported: number;
 }
@@ -34,6 +37,9 @@ interface CostPoint extends SourcePoint {
   energyLarge: number | null;
   energyCombined: number | null;
   energyOther: number | null;
+  energyDaytimeSmall: number | null;
+  energyDaytimeLarge: number | null;
+  energyDaytimeCombined: number | null;
   costTotal: number | null;
   costPc: number | null;
   costDaikin: number | null;
@@ -41,6 +47,9 @@ interface CostPoint extends SourcePoint {
   costLarge: number | null;
   costCombined: number | null;
   costOther: number | null;
+  costDaytimeSmall: number | null;
+  costDaytimeLarge: number | null;
+  costDaytimeCombined: number | null;
 }
 type SelectedRange = { start: number; end: number } | null;
 
@@ -57,7 +66,10 @@ export default function GraphsPage() {
   const daikin = useDaikinReadings(query);
   const tariffQuery = useQuery({ queryKey: ["tariff"], queryFn: api.tariff, refetchInterval: 300_000 });
   const sonoff = useMemo(() => findComputerPlug(devices.data ?? []), [devices.data]);
+  const parentsThermo = useMemo(() => findParentsThermoPlug(devices.data ?? []), [devices.data]);
   const computer = useSmartPlugReadings(sonoff?.id ?? null, query);
+  const parentsThermoHistory = useSmartPlugReadings(parentsThermo?.id ?? null, query);
+  const parentsThermoState = useDeviceState(parentsThermo?.id ?? null);
   const rows = (measurements.data?.data ?? []) as Measurement[] | Aggregate[];
   const rawRows = resolution === "raw" ? rows as Measurement[] : [];
   const periodRows = useMemo(() => {
@@ -66,6 +78,7 @@ export default function GraphsPage() {
   }, [rows, resolution, period]);
   const daikinRows = daikin.data?.data ?? [];
   const computerRows = computer.data?.data ?? [];
+  const parentsThermoRows = parentsThermoHistory.data?.data ?? [];
   const tariff = tariffQuery.data;
 
   const cycles = useMemo(
@@ -88,9 +101,9 @@ export default function GraphsPage() {
   }, [selection, costPoints]);
 
   const line = useMemo<EChartsOption>(() => {
-    if (resolution !== "raw") return aggregateOption(aggregatePoints, mode);
-    return sourceOption(costPoints, mode, selecting);
-  }, [aggregatePoints, costPoints, mode, period, resolution, selecting, tariff]);
+    if (resolution !== "raw") return aggregateOption(aggregatePoints, mode, range);
+    return sourceOption(costPoints, mode, selecting, parentsThermoRows, range);
+  }, [aggregatePoints, costPoints, mode, period, parentsThermoRows, range, resolution, selecting, tariff]);
   const brushEvents = useMemo(() => ({
     brushSelected: (event: unknown) => {
       const batches = (event as { batch?: Array<{ selected?: Array<{ dataIndex?: number[] }> }> }).batch ?? [];
@@ -143,7 +156,7 @@ export default function GraphsPage() {
         <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold">{mode === "power" ? "Potencia por procedencia" : mode === "energy" ? "Energía por procedencia" : "Coste por procedencia"}</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{resolution === "raw" ? "Total Wibeee y cargas separadas: Sonoff medido, Daikin estimado y acumuladores inferidos." : "En resoluciones agregadas se muestra el total; la separación por aparato requiere lecturas crudas."}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">{resolution === "raw" ? "Total Wibeee y cargas separadas: Sonoff medido, Daikin estimado y ciclos térmicos inferidos." : "En resoluciones agregadas se muestra el total; la separación por aparato requiere lecturas crudas."}</p>
           </div>
           <div className="flex items-center gap-2">
             {resolution === "raw" && <button type="button" aria-pressed={selecting} onClick={() => { setSelecting((active) => !active); setSelection(null); }} className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${selecting ? "border-sky-500 bg-sky-50 text-sky-900 dark:bg-sky-500/10 dark:text-sky-100" : ""}`}><MousePointer2 className="h-4 w-4" />{selecting ? "Arrastra en la gráfica" : "Seleccionar intervalo"}</button>}
@@ -154,6 +167,15 @@ export default function GraphsPage() {
         {measurements.isError ? <p role="alert" className="text-sm text-rose-500">No se pudieron cargar las lecturas: {measurements.error.message}</p> : null}
         {!measurements.isPending && !measurements.isError && rows.length === 0 ? <p className="text-sm text-slate-500">No hay lecturas en este periodo.</p> : null}
         {rows.length > 0 ? <EChart option={line} height={430} onEvents={brushEvents} /> : null}
+        {parentsThermo ? <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+          <strong>Termo de tus padres · TP‑Link:</strong>{" "}
+          {parentsThermoState.data?.online
+            ? `ahora ${parentsThermoState.data.is_on ? "encendido" : "apagado"}. `
+            : parentsThermoState.data ? "sin conexión con el enchufe. " : "consultando el estado actual. "}
+          {parentsThermoRows.length
+            ? `La gráfica muestra ${parentsThermoRows.length.toLocaleString("es-ES")} cambios/muestras históricas de estado. El TP‑Link no mide vatios; sus picos asociados se contrastan con Wibeee.`
+            : "El servidor empieza a guardar el estado desde esta actualización; no hay histórico anterior del TP‑Link. No mide vatios, así que los picos de consumo se atribuyen por inferencia del Wibeee."}
+        </div> : null}
         {selecting && resolution === "raw" ? <p className="text-xs text-sky-700 dark:text-sky-300">Arrastra sobre la gráfica para seleccionar un tramo. El coste se integra con las lecturas y el precio horario configurado.</p> : null}
         {selection && selectedCost != null ? <div className="mt-3 rounded-lg border border-sky-300 bg-sky-50 p-3 dark:border-sky-500/30 dark:bg-sky-500/10"><div className="text-xs text-slate-600 dark:text-slate-300">Intervalo: {selectedLabel}</div><div className="mt-1 text-lg font-semibold">Coste energético estimado: {formatMoney(selectedCost)}</div><div className="text-xs text-slate-600 dark:text-slate-300">{tariffRateSummary(tariff)} Tramos con huecos de más de 3 minutos no se extrapolan. Es coste equivalente de consumo; no descuenta autoconsumo/compensación ni incluye impuestos o costes fijos.</div></div> : null}
         <div className="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300 sm:grid-cols-2 xl:grid-cols-3">
@@ -162,6 +184,7 @@ export default function GraphsPage() {
           <span><b className="text-violet-500">Daikin</b> · estimación por variación de energía ONECTA</span>
           <span><b className="text-amber-500">Acumulador dormitorio</b> · inferido por ciclos</span>
           <span><b className="text-rose-500">Acumulador comedor</b> · inferido por ciclos</span>
+          <span><b className="text-orange-500">Cargas térmicas diurnas</b> · picos candidatos ~1 kW / ~2,5 kW; inferidos, sin atribución directa a un termo.</span>
           <span><b className="text-slate-500">Resto</b> · diferencia estimada, no atribuida</span>
           <span><b>Termo padres (TP-Link)</b> · solo estado; no mide vatios y no se le asigna consumo.</span>
         </div>
@@ -178,20 +201,27 @@ function findComputerPlug(devices: Device[]): Device | null {
   return candidates.find((device) => /ordenador|computador|computer|\bpc\b/i.test(device.name)) ?? (candidates.length === 1 ? candidates[0] : null);
 }
 
+function findParentsThermoPlug(devices: Device[]): Device | null {
+  return devices.find((device) => device.active && device.config?.adapter === "kasa_hs100") ?? null;
+}
+
 function buildSourcePoints(rows: Measurement[], computerRows: SmartPlugReading[], daikinRows: DaikinReading[], cycles: AccumulatorCycle[], period: PeriodFilter): SourcePoint[] {
   const adjusted = adjustPowerSeries(rows, computerRows, daikinRows);
   const rowByTime = new Map(rows.map((row) => [Date.parse(row.timestamp_local || row.timestamp_utc), row]));
-  const cycleAt = (time: number, category: AccumulatorCycle["category"]) => cycles.filter((cycle) => cycle.category === category && time >= cycle.startMs && time < cycle.endMs).reduce((sum, cycle) => sum + cycle.deltaW, 0);
+  const cycleAt = (time: number, category: AccumulatorCycle["category"], timeClass: AccumulatorCycle["timeClass"]) => cycles.filter((cycle) => cycle.timeClass === timeClass && cycle.category === category && time >= cycle.startMs && time < cycle.endMs).reduce((sum, cycle) => sum + cycle.deltaW, 0);
   return adjusted.filter((point) => matchesPeriod(point.timestamp, period)).map((point) => {
-    const small = cycleAt(point.timestamp, "small");
-    const large = cycleAt(point.timestamp, "large");
-    const combined = cycleAt(point.timestamp, "combined");
+    const small = cycleAt(point.timestamp, "small", "overnight");
+    const large = cycleAt(point.timestamp, "large", "overnight");
+    const combined = cycleAt(point.timestamp, "combined", "overnight");
+    const daytimeSmall = cycleAt(point.timestamp, "small", "daytime");
+    const daytimeLarge = cycleAt(point.timestamp, "large", "daytime");
+    const daytimeCombined = cycleAt(point.timestamp, "combined", "daytime");
     const pc = point.computerW ?? 0;
     const daikin = point.daikinW ?? 0;
-    const known = pc + daikin + small + large + combined;
+    const known = pc + daikin + small + large + combined + daytimeSmall + daytimeLarge + daytimeCombined;
     const factor = known > point.watts && known > 0 ? point.watts / known : 1;
-    const components = [pc, daikin, small, large, combined].map((value) => value * factor);
-    return { time: point.timestamp, total: point.watts, pc: components[0], daikin: components[1], small: components[2], large: components[3], combined: components[4], other: Math.max(0, point.watts - components.reduce((sum, value) => sum + value, 0)), imported: rowByTime.get(point.timestamp)?.grid_import_w ?? 0 };
+    const components = [pc, daikin, small, large, combined, daytimeSmall, daytimeLarge, daytimeCombined].map((value) => value * factor);
+    return { time: point.timestamp, total: point.watts, pc: components[0], daikin: components[1], small: components[2], large: components[3], combined: components[4], daytimeSmall: components[5], daytimeLarge: components[6], daytimeCombined: components[7], other: Math.max(0, point.watts - components.reduce((sum, value) => sum + value, 0)), imported: rowByTime.get(point.timestamp)?.grid_import_w ?? 0 };
   });
 }
 
@@ -213,10 +243,16 @@ function buildCostPoints(points: SourcePoint[], tariff?: Tariff): CostPoint[] {
       energyDaikin: energy(before?.daikin ?? point.daikin, point.daikin), energySmall: energy(before?.small ?? point.small, point.small),
       energyLarge: energy(before?.large ?? point.large, point.large), energyCombined: energy(before?.combined ?? point.combined, point.combined),
       energyOther: energy(before?.other ?? point.other, point.other),
+      energyDaytimeSmall: energy(before?.daytimeSmall ?? point.daytimeSmall, point.daytimeSmall),
+      energyDaytimeLarge: energy(before?.daytimeLarge ?? point.daytimeLarge, point.daytimeLarge),
+      energyDaytimeCombined: energy(before?.daytimeCombined ?? point.daytimeCombined, point.daytimeCombined),
       costTotal: cost(before?.total ?? point.total, point.total), costPc: cost(before?.pc ?? point.pc, point.pc),
       costDaikin: cost(before?.daikin ?? point.daikin, point.daikin), costSmall: cost(before?.small ?? point.small, point.small),
       costLarge: cost(before?.large ?? point.large, point.large), costCombined: cost(before?.combined ?? point.combined, point.combined),
-      costOther: cost(before?.other ?? point.other, point.other)
+      costOther: cost(before?.other ?? point.other, point.other),
+      costDaytimeSmall: cost(before?.daytimeSmall ?? point.daytimeSmall, point.daytimeSmall),
+      costDaytimeLarge: cost(before?.daytimeLarge ?? point.daytimeLarge, point.daytimeLarge),
+      costDaytimeCombined: cost(before?.daytimeCombined ?? point.daytimeCombined, point.daytimeCombined)
     };
   });
 }
@@ -229,30 +265,38 @@ function buildAggregatePoints(rows: Array<Measurement | Aggregate>, resolution: 
   }));
 }
 
-function sourceOption(points: CostPoint[], mode: GraphMode, selecting: boolean): EChartsOption {
+function sourceOption(points: CostPoint[], mode: GraphMode, selecting: boolean, parentsThermoRows: SmartPlugReading[], range: string): EChartsOption {
   const series = [
     ["Ordenador · Sonoff medido", "pc", "energyPc", "costPc"], ["Daikin · estimado", "daikin", "energyDaikin", "costDaikin"],
     ["Acumulador dormitorio · inferido", "small", "energySmall", "costSmall"], ["Acumulador comedor · inferido", "large", "energyLarge", "costLarge"],
-    ["Acumuladores · combinado", "combined", "energyCombined", "costCombined"], ["Resto · sin atribuir", "other", "energyOther", "costOther"]
+    ["Acumuladores · combinado", "combined", "energyCombined", "costCombined"],
+    ["Carga diurna candidata · ~1 kW", "daytimeSmall", "energyDaytimeSmall", "costDaytimeSmall"],
+    ["Carga diurna candidata · ~2,5 kW", "daytimeLarge", "energyDaytimeLarge", "costDaytimeLarge"],
+    ["Carga diurna candidata · combinada", "daytimeCombined", "energyDaytimeCombined", "costDaytimeCombined"],
+    ["Resto · sin atribuir", "other", "energyOther", "costOther"]
   ] as const;
-  const color = ["#10b981", "#8b5cf6", "#f59e0b", "#ef4444", "#a855f7", "#64748b"];
+  const color = ["#10b981", "#8b5cf6", "#f59e0b", "#ef4444", "#a855f7", "#fb923c", "#f97316", "#c2410c", "#64748b"];
   const valueKey = (field: (typeof series)[number]) => mode === "power" ? field[1] : mode === "energy" ? field[2] : field[3];
   const totalValue = (point: CostPoint) => mode === "power" ? point.total : mode === "energy" ? point.energyTotal : point.costTotal;
   const unit = mode === "power" ? "W" : mode === "energy" ? "kWh" : "€";
   const seriesOptions: NonNullable<EChartsOption["series"]> = series.map((field, index) => ({ name: field[0], type: "bar", stack: "loads", barMaxWidth: 24, data: points.map((point) => [point.time, point[valueKey(field)]]), itemStyle: { color: color[index] } }));
   seriesOptions.push({ name: "Consumo total · Wibeee", type: "line", showSymbol: false, connectNulls: false, lineStyle: { width: 2.5, type: "solid" }, data: points.map((point) => [point.time, totalValue(point)]), itemStyle: { color: "#38bdf8" } });
+  if (mode === "power") seriesOptions.push({ name: "Termo padres · TP‑Link (apagado/encendido)", type: "line", yAxisIndex: 1, step: "end", showSymbol: false, connectNulls: true, lineStyle: { width: 2, color: "#facc15" }, itemStyle: { color: "#facc15" }, data: [...parentsThermoRows].sort((a, b) => Date.parse(a.captured_at_utc) - Date.parse(b.captured_at_utc)).map((row) => [Date.parse(row.captured_at_utc), row.online && row.is_on != null ? Number(row.is_on) : null]) });
   return {
     color, tooltip: { trigger: "axis", valueFormatter: (value) => mode === "power" ? formatW(Number(value)) : mode === "energy" ? `${Number(value).toFixed(4)} kWh` : formatMoney(Number(value)) },
-    legend: { top: 0, textStyle: { color: "#cbd5e1" } }, grid: { top: 52, left: 75, right: 20, bottom: 70 },
+    legend: { top: 0, textStyle: { color: "#cbd5e1" } }, grid: { top: 52, left: 75, right: mode === "power" ? 62 : 20, bottom: 70 },
     toolbox: { feature: { dataZoom: {}, saveAsImage: {} } }, dataZoom: [{ type: "inside" }, { type: "slider", height: 24 }],
     brush: selecting ? { brushType: "lineX", xAxisIndex: 0, brushMode: "single", transformable: false } : { brushType: false },
-    xAxis: { type: "time", axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
-    yAxis: { type: "value", name: mode === "cost" ? "Coste por intervalo · €" : mode === "energy" ? "Energía por intervalo · kWh" : `Potencia · ${unit}`, min: 0, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
+    xAxis: hourlyAxis(range),
+    yAxis: mode === "power" ? [
+      { type: "value", name: `Potencia · ${unit}`, min: 0, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
+      { type: "value", name: "TP‑Link", min: 0, max: 1, interval: 1, position: "right", axisLabel: { color: "#facc15", formatter: (value: number) => value === 1 ? "ON" : "OFF" }, splitLine: { show: false } }
+    ] : { type: "value", name: mode === "cost" ? "Coste por intervalo · €" : "Energía por intervalo · kWh", min: 0, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
     series: seriesOptions
   };
 }
 
-function aggregateOption(points: ReturnType<typeof buildAggregatePoints>, mode: GraphMode): EChartsOption {
+function aggregateOption(points: ReturnType<typeof buildAggregatePoints>, mode: GraphMode, range: string): EChartsOption {
   const isCost = mode === "cost";
   const isPower = mode === "power";
   const value = (point: ReturnType<typeof buildAggregatePoints>[number]) => isCost ? point.cost : isPower ? point.maxPower : point.energy;
@@ -260,9 +304,14 @@ function aggregateOption(points: ReturnType<typeof buildAggregatePoints>, mode: 
   return {
     tooltip: { trigger: "axis", valueFormatter: (item) => isCost ? formatMoney(Number(item)) : isPower ? formatW(Number(item)) : `${Number(item).toFixed(3)} kWh` },
     legend: { top: 0 }, grid: { top: 48, left: 70, right: 20, bottom: 60 }, dataZoom: [{ type: "inside" }, { type: "slider", height: 22 }],
-    xAxis: { type: "time", axisLabel: { color: "#94a3b8" } }, yAxis: { type: "value", name: isCost ? "Coste variable estimado · €" : isPower ? "Potencia máxima · W" : "Consumo · kWh", min: 0 },
+    xAxis: hourlyAxis(range), yAxis: { type: "value", name: isCost ? "Coste variable estimado · €" : isPower ? "Potencia máxima · W" : "Consumo · kWh", min: 0 },
     series: [{ name, type: "bar", barMaxWidth: 24, data: points.map((point) => [point.time, value(point)]) }]
   };
+}
+
+function hourlyAxis(range: string): EChartsOption["xAxis"] {
+  const interval = range === "1h" ? 5 * 60_000 : range === "week" ? 6 * 3_600_000 : range === "month" ? 24 * 3_600_000 : range === "year" ? 7 * 24 * 3_600_000 : 3_600_000;
+  return { type: "time", minInterval: interval, maxInterval: interval, axisLabel: { color: "#94a3b8", hideOverlap: true }, splitLine: { show: true, lineStyle: { type: "dashed", color: "#64748b", opacity: 0.55 } } };
 }
 
 function matchesPeriod(timestamp: number, period: PeriodFilter): boolean {

@@ -19,7 +19,6 @@ async def poll_metering_smart_plugs(db: Session) -> int:
         db.scalars(
             select(Device).where(
                 Device.active.is_(True),
-                Device.measurement_capable.is_(True),
                 Device.type == "smart_plug",
             )
         )
@@ -51,7 +50,9 @@ async def poll_metering_smart_plugs(db: Session) -> int:
             .limit(1)
         )
         online = bool(state and state.online)
-        power_w = state.power_w if state and online else None
+        # Kasa HS100 devices in this home report relay state but do not meter
+        # power. Keep their state history without treating it as a measurement.
+        power_w = state.power_w if state and online and device.measurement_capable else None
         energy_increment = Decimal("0")
         if previous and previous.online and previous.power_w is not None and online and power_w is not None:
             elapsed = (captured_at - db_utc(previous.captured_at_utc)).total_seconds()

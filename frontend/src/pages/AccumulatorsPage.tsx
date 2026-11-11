@@ -29,7 +29,7 @@ export default function AccumulatorsPage() {
   const [selectedNight, setSelectedNight] = useState("");
   const [chartMode, setChartMode] = useState<ChartMode>("power");
   const night = nights.includes(selectedNight) ? selectedNight : nights.at(-1) ?? "";
-  const nightCycles = cycles.filter((cycle) => cycle.startNight === night);
+  const nightCycles = cycles.filter((cycle) => cycle.timeClass === "overnight" && cycle.startNight === night);
   const smallCycles = nightCycles.filter((cycle) => cycle.category === "small");
   const largeCycles = nightCycles.filter((cycle) => cycle.category === "large");
   const points = night ? selectNightSamples(correctedSeries, night) : [];
@@ -80,7 +80,7 @@ export default function AccumulatorsPage() {
         <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
           <div>
           <h3 className="text-base font-semibold">Perfil de {chartMode === "power" ? "potencia" : chartMode === "energy" ? "energía" : "coste"} · {night ? nightLabel(night) : "sin noche seleccionada"}</h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400">Azul: vivienda total medida. Morado: resto estimado tras descontar Sonoff y Daikin cuando hay datos fiables. Las bandas marcan ciclos candidatos; energía y coste se integran entre lecturas separadas por hasta 3 min.</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Azul: vivienda total medida. Morado: resto estimado tras descontar Sonoff y Daikin cuando hay datos fiables. Las bandas marcan ciclos candidatos; las líneas verticales discontinuas indican cada hora. Energía y coste se integran entre lecturas separadas por hasta 3 min.</p>
           </div>
           <div className="flex rounded-md border p-1" role="group" aria-label="Magnitud del perfil">
             {([ ["power", "Potencia · W"], ["energy", "Energía · kWh"], ["cost", "Coste · €"] ] as Array<[ChartMode, string]>).map(([mode, label]) => <button key={mode} type="button" aria-pressed={chartMode === mode} onClick={() => setChartMode(mode)} className={`rounded px-3 py-1.5 text-sm ${chartMode === mode ? "bg-slate-900 text-white dark:bg-white dark:text-slate-950" : ""}`}>{label}</button>)}
@@ -105,7 +105,7 @@ export default function AccumulatorsPage() {
       </section>
 
       <aside className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
-        <strong>Cómo leerlo:</strong> puedes elegir cualquier noche con lecturas, aunque no se hayan detectado acumuladores. El histórico principal viene del Wibeee. El ordenador se corrige con su potencia Sonoff medida; Daikin se contrasta con sus estados y los incrementos de energía ONECTA. Los ciclos siguen siendo candidatos —no mediciones individuales de los acumuladores— y se buscan entre las 18:00 y las 10:00, sin exigir una hora fija de arranque.
+        <strong>Cómo leerlo:</strong> puedes elegir cualquier noche con lecturas, aunque no se hayan detectado acumuladores. El histórico principal viene del Wibeee. El ordenador se corrige con su potencia Sonoff medida; Daikin se contrasta con sus estados y los incrementos de energía ONECTA. Los ciclos nocturnos siguen siendo candidatos —no mediciones individuales de los acumuladores— y se buscan entre las 18:00 y las 10:00, sin exigir una hora fija de arranque. Las gráficas generales también muestran por separado picos térmicos diurnos candidatos.
       </aside>
     </div>
   );
@@ -160,7 +160,7 @@ function buildNightChart(points: AdjustedPowerSample[], cycles: AccumulatorCycle
     legend: { top: 0 },
     grid: { top: 42, left: 75, right: 20, bottom: 55 },
     dataZoom: [{ type: "inside" }, { type: "slider", height: 20 }],
-    xAxis: { type: "time", min: points[0]?.timestamp, axisLabel: { color: "#94a3b8" } },
+    xAxis: { type: "time", min: points[0]?.timestamp, minInterval: 3_600_000, maxInterval: 3_600_000, axisLabel: { color: "#94a3b8", hideOverlap: true }, splitLine: { show: true, lineStyle: { type: "dashed", color: "#64748b", opacity: 0.55 } } },
     yAxis: { type: "value", name: mode === "power" ? "Potencia · W" : mode === "energy" ? "Energía por lectura · kWh" : "Coste por lectura · €", min: 0, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
     series: [
       { name: "Vivienda total · medido", type: "bar", barMaxWidth: 22, data: values.map((row) => [row.time, row.total]) },

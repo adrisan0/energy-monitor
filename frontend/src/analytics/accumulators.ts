@@ -1,6 +1,7 @@
 import type { DaikinReading, Measurement, SmartPlugReading } from "../api/types";
 
 export type AccumulatorClass = "small" | "large" | "combined";
+export type LoadTimeClass = "overnight" | "daytime";
 
 export interface AccumulatorCycle {
   startMs: number;
@@ -12,6 +13,7 @@ export interface AccumulatorCycle {
   durationMinutes: number;
   energyKwh: number;
   category: AccumulatorClass;
+  timeClass: LoadTimeClass;
   confidence: "alta" | "media" | "baja";
   startNight: string;
   computerCorrected: boolean;
@@ -51,8 +53,8 @@ interface DaikinPowerInterval {
 
 const MAX_SAMPLE_GAP_MS = 150_000;
 const MAX_REFERENCE_AGE_MS = 180_000;
-const NIGHT_START_HOUR = 18;
-const NIGHT_END_HOUR = 10;
+const DAYTIME_START_HOUR = 10;
+const DAYTIME_END_HOUR = 18;
 
 /** Infer appliance-sized steps after correcting for measured or known household loads. */
 export function detectAccumulatorCycles(
@@ -68,8 +70,6 @@ export function detectAccumulatorCycles(
 
   const steps: Step[] = [];
   for (let i = 3; i < samples.length - 3; i += 1) {
-    const hour = new Date(samples[i].timestamp).getHours();
-    if (hour >= NIGHT_END_HOUR && hour < NIGHT_START_HOUR) continue;
     const window = samples.slice(i - 3, i + 4);
     if (window.some((sample, index) => index > 0 && sample.timestamp - window[index - 1].timestamp > MAX_SAMPLE_GAP_MS)) continue;
 
@@ -118,6 +118,8 @@ export function detectAccumulatorCycles(
     used.add(match.index);
     const deltaW = (start.deltaW + Math.abs(end.deltaW)) / 2;
     const category: AccumulatorClass = deltaW < 1950 ? "small" : deltaW < 3150 ? "large" : "combined";
+    const startHour = new Date(start.timestamp).getHours();
+    const timeClass: LoadTimeClass = startHour >= DAYTIME_START_HOUR && startHour < DAYTIME_END_HOUR ? "daytime" : "overnight";
     const relativeError = Math.abs(start.deltaW - Math.abs(end.deltaW)) / deltaW;
     let confidence: AccumulatorCycle["confidence"] = match.minutes <= 60 && relativeError <= 0.18 ? "alta" : match.minutes <= 240 && relativeError <= 0.23 ? "media" : "baja";
     if (start.daikinTransitionNear || end.daikinTransitionNear) confidence = "baja";
@@ -127,7 +129,9 @@ export function detectAccumulatorCycles(
     if (!computerMeteringConfigured) confidence = lowerConfidence(confidence, "media");
 
     const startDate = new Date(start.timestamp);
-    const startNight = startDate.getHours() < 12 ? addDays(localDateKey(startDate), -1) : localDateKey(startDate);
+    const startNight = timeClass === "daytime"
+      ? localDateKey(startDate)
+      : startDate.getHours() < 12 ? addDays(localDateKey(startDate), -1) : localDateKey(startDate);
     cycles.push({
       startMs: start.timestamp,
       endMs: end.timestamp,
@@ -138,6 +142,7 @@ export function detectAccumulatorCycles(
       durationMinutes: match.minutes,
       energyKwh: deltaW * match.minutes / 60_000,
       category,
+      timeClass,
       confidence,
       startNight,
       computerCorrected: start.computerCovered && end.computerCovered,
@@ -305,7 +310,7 @@ function addRecurrenceCounts(cycles: AccumulatorCycle[]): AccumulatorCycle[] {
   return cycles.map((cycle) => {
     const minuteOfDay = new Date(cycle.startMs).getHours() * 60 + new Date(cycle.startMs).getMinutes();
     const matchingNights = new Set(cycles.filter((other) => {
-      if (other === cycle || other.category !== cycle.category || other.startNight === cycle.startNight) return false;
+      if (other === cycle || other.category !== cycle.category || other.timeClass !== cycle.timeClass || other.startNight === cycle.startNight) return false;
       if (Math.abs(other.deltaW - cycle.deltaW) > Math.max(400, cycle.deltaW * 0.2)) return false;
       const otherMinute = new Date(other.startMs).getHours() * 60 + new Date(other.startMs).getMinutes();
       const gap = Math.abs(otherMinute - minuteOfDay);
