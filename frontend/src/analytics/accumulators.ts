@@ -52,7 +52,7 @@ interface DaikinPowerInterval {
   watts: number;
 }
 
-const MAX_SAMPLE_GAP_MS = 150_000;
+const MAX_SAMPLE_GAP_MS = 240_000;
 const MAX_REFERENCE_AGE_MS = 180_000;
 const DAYTIME_START_HOUR = 10;
 const DAYTIME_END_HOUR = 18;
@@ -131,7 +131,14 @@ export function detectAccumulatorCycles(
       const gapIndex = lowerBound(gaps, start.timestamp, (value) => value);
       if (gaps[gapIndex] <= end.timestamp) continue;
       const difference = Math.abs(Math.abs(end.deltaW) - start.deltaW);
-      if (difference <= Math.max(350, start.deltaW * 0.23)) matches.push({ index: j, error: difference + minutes * 0.4, minutes });
+      if (difference > Math.max(350, start.deltaW * 0.23)) continue;
+      const from = lowerBound(samples, start.timestamp);
+      const to = lowerBound(samples, end.timestamp);
+      const interval = samples.slice(from, to);
+      // A paired fall hours later is not the same load if the intervening
+      // measurements do not support a sustained plateau.
+      if (!interval.length || interval.filter((sample) => sample.adjustedW < start.deltaW * 0.7).length / interval.length > 0.1) continue;
+      matches.push({ index: j, error: difference + minutes * 0.4, minutes });
     }
     const match = matches.sort((a, b) => a.error - b.error)[0];
     if (!match) continue;
