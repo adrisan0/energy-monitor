@@ -33,6 +33,15 @@ export function useDaikinReadings(range: string) {
   });
 }
 
+export function useSmartPlugReadings(deviceId: number | null, range: string) {
+  return useQuery({
+    queryKey: ["smart-plug-readings", deviceId, range],
+    queryFn: () => api.smartPlugReadings(deviceId as number, range),
+    enabled: deviceId != null,
+    refetchInterval: 60_000
+  });
+}
+
 export function useMeasurements(resolution: string, range: string) {
   return useQuery({
     queryKey: ["measurements", resolution, range],

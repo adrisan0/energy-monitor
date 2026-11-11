@@ -15,6 +15,7 @@ import type {
   MeasurementsResponse,
   RawPayload,
   SystemStatus,
+  SmartPlugReadingsResponse,
   Tariff
 } from "./types";
 
@@ -40,6 +41,7 @@ export const api = {
   status: () => request<SystemStatus>("/system/status"),
   daikinLatest: () => request<DaikinLatestResponse>("/climate/daikin/latest"),
   daikinReadings: (range: string) => request<DaikinReadingsResponse>(`/climate/daikin/readings?${range}&limit=20000`),
+  smartPlugReadings: (deviceId: number, range: string) => request<SmartPlugReadingsResponse>(`/smart-plugs/readings?device_id=${deviceId}&${range}&limit=50000`),
   measurements: (resolution: string, range: string) =>
     request<MeasurementsResponse>(`/measurements?resolution=${resolution}&${range}`),
   rawLatest: () => request<RawPayload>("/measurements/raw/latest"),

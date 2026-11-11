@@ -386,6 +386,10 @@ npm run build
 
 ## Integraciones futuras
 
-Las integraciones Sonoff S61S, TP-Link HS100, MQTT, Home Assistant, Alexa y Telegram estan modeladas pero desactivadas por defecto mediante feature flags.
+La app puede guardar historico de potencia y energia de enchufes Sonoff S61S y TP-Link HS100 con medicion cuando `FEATURE_SMART_DEVICES=true`. El worker consulta cada 60 segundos por defecto (`SMART_PLUG_POLL_INTERVAL_SECONDS`) y calcula kWh integrando las lecturas de potencia; no extrapola cortes de mas de 3 minutos. La consulta no envia ordenes de encendido ni apagado.
+
+Para habilitar un enchufe, debe estar activo y marcado como `measurement_capable`, tener su IP local (o `config.host`) y estar accesible desde el contenedor worker. Sonoff puede requerir tambien `device_id` y `api_key` en la configuracion del dispositivo, segun su modo LAN. El historico empieza al habilitar la captura; no se reconstruye consumo anterior. La pantalla Enchufes muestra la potencia y el historico disponible.
+
+Las integraciones MQTT, Home Assistant, Alexa y Telegram siguen dependiendo de sus feature flags y configuracion.
 
 Consulta `docs/FUTURE_INTEGRATIONS.md`.

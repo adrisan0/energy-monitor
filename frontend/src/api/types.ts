@@ -93,6 +93,21 @@ export interface DaikinReadingsResponse {
   data: DaikinReading[];
 }
 
+export interface SmartPlugReading {
+  id: number;
+  device_id: number;
+  device_name: string;
+  captured_at_utc: string;
+  online: boolean;
+  is_on: boolean | null;
+  power_w: number | null;
+  energy_increment_kwh: number;
+}
+
+export interface SmartPlugReadingsResponse {
+  data: SmartPlugReading[];
+}
+
 export interface RawPayload {
   id: number;
   timestamp_utc: string;

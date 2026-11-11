@@ -23,6 +23,7 @@ from app.models import (
     Device,
     EnergyAggregate,
     MeterSample,
+    SmartPlugReading,
     SystemEvent,
 )
 from app.schemas.annotations import AnnotationCreate, AnnotationRead, AnnotationUpdate
@@ -106,6 +107,44 @@ def daikin_readings(
         query = query.where(DaikinReading.device_id == device_id)
     rows = db.scalars(query.order_by(desc(DaikinReading.captured_at_utc)).limit(limit)).all()
     return {"data": [_daikin_reading_dict(row, include_profiles=False) for row in rows]}
+
+
+@router.get("/smart-plugs/latest", tags=["smart-plugs"])
+def latest_smart_plug_readings(db: DbDep) -> dict[str, Any]:
+    latest_by_device = (
+        select(SmartPlugReading.device_id, func.max(SmartPlugReading.captured_at_utc).label("captured_at_utc"))
+        .group_by(SmartPlugReading.device_id)
+        .subquery()
+    )
+    rows = db.scalars(
+        select(SmartPlugReading)
+        .join(
+            latest_by_device,
+            and_(
+                SmartPlugReading.device_id == latest_by_device.c.device_id,
+                SmartPlugReading.captured_at_utc == latest_by_device.c.captured_at_utc,
+            ),
+        )
+        .order_by(SmartPlugReading.device_name.asc())
+    ).all()
+    return {"data": [_smart_plug_reading_dict(row) for row in rows]}
+
+
+@router.get("/smart-plugs/readings", tags=["smart-plugs"])
+def smart_plug_readings(
+    db: DbDep,
+    device_id: int = Query(ge=1),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=10000, ge=1, le=50000),
+) -> dict[str, Any]:
+    query = select(SmartPlugReading).where(SmartPlugReading.device_id == device_id)
+    if start:
+        query = query.where(SmartPlugReading.captured_at_utc >= to_utc(start))
+    if end:
+        query = query.where(SmartPlugReading.captured_at_utc <= to_utc(end))
+    rows = db.scalars(query.order_by(desc(SmartPlugReading.captured_at_utc)).limit(limit)).all()
+    return {"data": [_smart_plug_reading_dict(row) for row in rows]}
 
 
 @router.get("/measurements", tags=["measurements"])
@@ -564,6 +603,19 @@ def _daikin_reading_dict(row: DaikinReading, *, include_profiles: bool = False) 
         "energy_profiles": row.energy_profiles if include_profiles else {},
         "in_error_state": row.in_error_state,
         "in_warning_state": row.in_warning_state,
+    }
+
+
+def _smart_plug_reading_dict(row: SmartPlugReading) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "device_id": row.device_id,
+        "device_name": row.device_name,
+        "captured_at_utc": row.captured_at_utc,
+        "online": row.online,
+        "is_on": row.is_on,
+        "power_w": _float(row.power_w),
+        "energy_increment_kwh": _float(row.energy_increment_kwh),
     }
 
 

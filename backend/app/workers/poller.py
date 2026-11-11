@@ -19,6 +19,7 @@ from app.services.meter_client import fetch_meter_payload
 from app.services.meter_parser import parse_meter_xml
 from app.services.samples import store_parsed_payload
 from app.services.smart_plug_automation import apply_smart_plug_automation_for_sample
+from app.services.smart_plug_polling import poll_metering_smart_plugs
 from app.services.telegram_bot import run_telegram_bot_forever
 
 logger = get_logger(__name__)
@@ -133,6 +134,8 @@ async def run_forever() -> None:
         asyncio.create_task(run_telegram_bot_forever())
     if settings.feature_daikin:
         asyncio.create_task(run_daikin_poll_forever())
+    if settings.feature_smart_devices:
+        asyncio.create_task(run_smart_plug_poll_forever())
 
     while True:
         with get_session_factory()() as db:
@@ -167,6 +170,19 @@ async def run_daikin_poll_forever() -> None:
             await asyncio.sleep(sleep_for + random.uniform(0, 2))
     finally:
         await reader.close()
+
+
+async def run_smart_plug_poll_forever() -> None:
+    settings = get_settings()
+    while True:
+        try:
+            with get_session_factory()() as db:
+                count = await poll_metering_smart_plugs(db)
+            if count:
+                logger.info("smart_plug_readings_stored", extra={"device_count": count})
+        except Exception:  # noqa: BLE001 - keep energy polling alive if a smart plug fails
+            logger.exception("smart_plug_metering_poll_failed")
+        await asyncio.sleep(settings.smart_plug_poll_interval_seconds)
 
 
 def main() -> None:

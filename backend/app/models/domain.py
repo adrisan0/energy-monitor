@@ -2,7 +2,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, Integer, Numeric, String, Text, Time, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, Time, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
@@ -107,6 +107,21 @@ class DaikinReading(Base):
     energy_profiles: Mapped[dict[str, Any]] = json_column()
     in_error_state: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     in_warning_state: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
+class SmartPlugReading(Base):
+    """Power snapshots from metering smart plugs such as the computer Sonoff."""
+
+    __tablename__ = "smart_plug_readings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"), index=True, nullable=False)
+    device_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    captured_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    online: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_on: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    power_w: Mapped[Decimal | None] = mapped_column(Numeric(14, 3), nullable=True)
+    energy_increment_kwh: Mapped[Decimal] = mapped_column(Numeric(14, 8), default=Decimal("0"), nullable=False)
 
 
 class TariffSettings(Base, TimestampMixin):

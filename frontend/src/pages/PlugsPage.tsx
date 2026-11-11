@@ -1,8 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { EChartsOption } from "echarts";
 import { api } from "../api/client";
 import type { Device } from "../api/types";
-import { useDeviceState, useDevices, useLatest } from "../hooks/useEnergy";
+import EChart from "../components/EChart";
+import { useDeviceState, useDevices, useLatest, useSmartPlugReadings } from "../hooks/useEnergy";
+import { formatKwh, formatW, rangeQuery } from "../utils/format";
 
 const DEFAULT_TOKEN = "change-me-local-admin-token";
 
@@ -78,6 +81,22 @@ function PlugCard({ plug, token }: { plug: Device; token: string }) {
   const latest = useLatest();
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [draft, setDraft] = useState<ThermoAutomation>(DEFAULT_THERMO_AUTOMATION);
+  const [historyRange, setHistoryRange] = useState("today");
+  const hasLanAddress = Boolean(plug.ip_address || plug.config?.ip_address || plug.config?.host);
+  const metering = Boolean(plug.measurement_capable && ["sonoff_s61s", "kasa_hs100"].includes(String(plug.config?.adapter ?? "")));
+  const queryRange = useMemo(() => rangeQuery(historyRange), [historyRange]);
+  const history = useSmartPlugReadings(metering ? plug.id : null, queryRange);
+  const historyRows = useMemo(() => [...(history.data?.data ?? [])].reverse(), [history.data?.data]);
+  const energyKwh = historyRows.reduce((sum, row) => sum + (row.energy_increment_kwh ?? 0), 0);
+  const powerChart: EChartsOption = useMemo(() => ({
+    color: ["#f59e0b"],
+    tooltip: { trigger: "axis", valueFormatter: (value) => `${Number(value).toFixed(1)} W` },
+    grid: { top: 20, left: 55, right: 18, bottom: 45 },
+    dataZoom: [{ type: "inside" }, { type: "slider", height: 18 }],
+    xAxis: { type: "time", axisLabel: { color: "#94a3b8" } },
+    yAxis: { type: "value", name: "W", min: 0, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
+    series: [{ name: "Potencia", type: "line", showSymbol: false, connectNulls: false, areaStyle: { opacity: 0.12 }, data: historyRows.filter((row) => row.power_w != null).map((row) => [Date.parse(row.captured_at_utc), row.power_w]) }]
+  }), [historyRows]);
 
   useEffect(() => {
     const raw = (plug.config?.thermo_automation ?? {}) as Partial<ThermoAutomation>;
@@ -248,6 +267,34 @@ function PlugCard({ plug, token }: { plug: Device; token: string }) {
         <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
           Si falla el Sonoff, suele faltar `device_id` o `api_key`, o el enchufe no anuncia LAN mode en la red local.
         </div>
+      ) : null}
+
+      {metering ? (
+        <section className="mt-4 space-y-3 rounded-xl border border-slate-200 p-4 dark:border-white/10">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h4 className="text-sm font-semibold">Consumo medido por el enchufe</h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Potencia del ordenador y energía integrada a partir de lecturas cada minuto.</p>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {[["1h", "1 h"], ["24h", "24 h"], ["today", "Hoy"], ["week", "7 días"]].map(([key, label]) => (
+                <button key={key} type="button" onClick={() => setHistoryRange(key)} className={`rounded-md px-2.5 py-1.5 text-xs ${historyRange === key ? "bg-slate-900 text-white dark:bg-white dark:text-slate-950" : "bg-slate-100 dark:bg-white/10"}`}>{label}</button>
+              ))}
+            </div>
+          </div>
+          {!hasLanAddress ? (
+            <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">Para empezar a guardar datos falta configurar la IP local del Sonoff en el servidor. Cuando esté configurada, el histórico empezará a llenarse; no hay lecturas anteriores guardadas.</p>
+          ) : null}
+          {history.isError ? <p role="alert" className="text-sm text-rose-500">No se pudo cargar el histórico del enchufe: {history.error.message}</p> : null}
+          <div className="grid grid-cols-2 gap-3">
+            <Tile label="Potencia actual" value={formatW(historyRows.at(-1)?.power_w)} />
+            <Tile label={`Energía · ${historyRange === "today" ? "hoy" : historyRange}`} value={formatKwh(energyKwh)} />
+          </div>
+          {history.isPending ? <p className="text-sm text-slate-500">Cargando histórico…</p> : null}
+          {!history.isPending && historyRows.length === 0 ? <p className="text-sm text-slate-500">Aún no hay lecturas guardadas para este periodo.</p> : null}
+          {historyRows.length > 0 ? <EChart option={powerChart} height={260} /> : null}
+          <p className="text-xs text-slate-500 dark:text-slate-400">La energía se estima integrando la potencia medida. Los cortes de más de 3 minutos no se extrapolan.</p>
+        </section>
       ) : null}
 
       {adapter === "kasa_hs100" ? (

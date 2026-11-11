@@ -6,6 +6,7 @@ from app.models.domain import (
     EnergyAggregate,
     MeterSample,
     SystemEvent,
+    SmartPlugReading,
     TariffSettings,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "EnergyAggregate",
     "MeterSample",
     "SystemEvent",
+    "SmartPlugReading",
     "TariffSettings",
 ]

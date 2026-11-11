@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     feature_telegram: bool = False
     feature_smart_devices: bool = False
     feature_daikin: bool = False
+    smart_plug_poll_interval_seconds: int = Field(default=60, ge=10)
     telegram_bot_token: str | None = None
     telegram_bot_tokens: str = ""
     telegram_allowed_chat_ids: str = ""
