@@ -67,6 +67,7 @@ export function detectAccumulatorCycles(
 ): AccumulatorCycle[] {
   const samples = adjustPowerSeries(rows, computerReadings, daikinReadings);
   const gaps = samples.flatMap((sample, index) => index > 0 && sample.timestamp - samples[index - 1].timestamp > MAX_SAMPLE_GAP_MS ? [sample.timestamp] : []);
+  const longGaps = samples.flatMap((sample, index) => index > 0 && sample.timestamp - samples[index - 1].timestamp > 600_000 ? [sample.timestamp] : []);
   const daikin = [...daikinReadings].sort((a, b) => Date.parse(a.captured_at_utc) - Date.parse(b.captured_at_utc));
   const daikinTransitions = buildDaikinTransitions(daikin);
 
@@ -103,8 +104,8 @@ export function detectAccumulatorCycles(
   // when both complementary falls are observed without a telemetry gap.
   const expandedSteps = steps.flatMap((step, index) => {
     if (step.deltaW < 3150 || step.deltaW > 4500) return [step];
-    const gapIndex = lowerBound(gaps, step.timestamp, (value) => value);
-    const falls = steps.slice(index + 1).filter((end) => end.timestamp - step.timestamp <= 8 * 3_600_000 && end.deltaW < -700 && !(gaps[gapIndex] <= end.timestamp));
+    const gapIndex = lowerBound(longGaps, step.timestamp, (value) => value);
+    const falls = steps.slice(index + 1).filter((end) => end.timestamp - step.timestamp <= 10 * 3_600_000 && end.deltaW < -700 && !(longGaps[gapIndex] <= end.timestamp));
     const pairs = falls.flatMap((small) => falls
       .filter((large) => large !== small && -small.deltaW < 1950 && -large.deltaW >= 1950 && -large.deltaW < 3150)
       .map((large) => ({ small, large, error: Math.abs(step.deltaW + small.deltaW + large.deltaW) })));
@@ -125,11 +126,12 @@ export function detectAccumulatorCycles(
       const end = steps[j];
       if (end.deltaW >= 0 || used.has(j)) continue;
       const minutes = (end.timestamp - start.timestamp) / 60_000;
-      if (minutes > 480) break;
+      if (minutes > (start.decomposed ? 600 : 480)) break;
       if (minutes < 5) continue;
       // A matching edge after a telemetry outage cannot establish a continuous cycle.
-      const gapIndex = lowerBound(gaps, start.timestamp, (value) => value);
-      if (gaps[gapIndex] <= end.timestamp) continue;
+      const relevantGaps = start.decomposed ? longGaps : gaps;
+      const gapIndex = lowerBound(relevantGaps, start.timestamp, (value) => value);
+      if (relevantGaps[gapIndex] <= end.timestamp) continue;
       const difference = Math.abs(Math.abs(end.deltaW) - start.deltaW);
       if (difference > Math.max(350, start.deltaW * 0.23)) continue;
       const from = lowerBound(samples, start.timestamp);
