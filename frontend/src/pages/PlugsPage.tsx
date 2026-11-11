@@ -83,7 +83,7 @@ function PlugCard({ plug, token }: { plug: Device; token: string }) {
   const [draft, setDraft] = useState<ThermoAutomation>(DEFAULT_THERMO_AUTOMATION);
   const [historyRange, setHistoryRange] = useState("today");
   const hasLanAddress = Boolean(plug.ip_address || plug.config?.ip_address || plug.config?.host);
-  const metering = Boolean(plug.measurement_capable && ["sonoff_s61s", "kasa_hs100"].includes(String(plug.config?.adapter ?? "")));
+  const metering = Boolean(plug.measurement_capable && String(plug.config?.adapter ?? "") === "sonoff_s61s");
   const queryRange = useMemo(() => rangeQuery(historyRange), [historyRange]);
   const history = useSmartPlugReadings(metering ? plug.id : null, queryRange);
   const historyRows = useMemo(() => [...(history.data?.data ?? [])].reverse(), [history.data?.data]);
@@ -228,7 +228,7 @@ function PlugCard({ plug, token }: { plug: Device; token: string }) {
     <section className="panel p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold">{plug.name}</h3>
+          <h3 className="text-base font-semibold">{adapterDisplayName(plug)}</h3>
           <p className="text-sm text-slate-500 dark:text-slate-400">
             {adapter === "sonoff_s61s" ? "Sonoff/eWeLink original" : "TP-Link Kasa"}
           </p>
@@ -368,6 +368,13 @@ function PlugCard({ plug, token }: { plug: Device; token: string }) {
       </div>
     </section>
   );
+}
+
+function adapterDisplayName(plug: Device): string {
+  const adapter = String(plug.config?.adapter ?? "");
+  if (adapter === "sonoff_s61s") return "Ordenador · Sonoff";
+  if (adapter === "kasa_hs100" && /termo.*padres|padres.*termo/i.test(plug.name)) return "Termo padres · TP-Link";
+  return plug.name;
 }
 
 function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {

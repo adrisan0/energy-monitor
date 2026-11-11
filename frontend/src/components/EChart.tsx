@@ -5,9 +5,10 @@ import type { EChartsOption } from "echarts";
 interface EChartProps {
   option: EChartsOption;
   height?: number;
+  onEvents?: Record<string, (event: any) => void>;
 }
 
-export default function EChart({ option, height = 360 }: EChartProps) {
+export default function EChart({ option, height = 360, onEvents }: EChartProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
@@ -15,6 +16,7 @@ export default function EChart({ option, height = 360 }: EChartProps) {
     if (!ref.current) return;
     const chart = echarts.init(ref.current);
     chartRef.current = chart;
+    for (const [name, handler] of Object.entries(onEvents ?? {})) chart.on(name, handler);
     const resizeObserver = new ResizeObserver(() => chart.resize());
     resizeObserver.observe(ref.current);
     return () => {
@@ -22,7 +24,7 @@ export default function EChart({ option, height = 360 }: EChartProps) {
       chart.dispose();
       chartRef.current = null;
     };
-  }, []);
+  }, [onEvents]);
 
   useEffect(() => {
     chartRef.current?.setOption(option, { notMerge: true });
