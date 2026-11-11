@@ -51,7 +51,7 @@ export default function GraphsPage() {
   const [mode, setMode] = useState<GraphMode>("power");
   const [selecting, setSelecting] = useState(false);
   const [selection, setSelection] = useState<SelectedRange>(null);
-  const query = rangeQuery(range);
+  const query = useMemo(() => rangeQuery(range), [range]);
   const measurements = useMeasurements(resolution, query);
   const devices = useDevices();
   const daikin = useDaikinReadings(query);

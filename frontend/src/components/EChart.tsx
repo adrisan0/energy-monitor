@@ -16,13 +16,21 @@ export default function EChart({ option, height = 360, onEvents }: EChartProps) 
     if (!ref.current) return;
     const chart = echarts.init(ref.current);
     chartRef.current = chart;
-    for (const [name, handler] of Object.entries(onEvents ?? {})) chart.on(name, handler);
     const resizeObserver = new ResizeObserver(() => chart.resize());
     resizeObserver.observe(ref.current);
     return () => {
       resizeObserver.disconnect();
       chart.dispose();
       chartRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !onEvents) return;
+    for (const [name, handler] of Object.entries(onEvents)) chart.on(name, handler);
+    return () => {
+      for (const [name, handler] of Object.entries(onEvents)) chart.off(name, handler);
     };
   }, [onEvents]);
 
