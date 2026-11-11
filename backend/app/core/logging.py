@@ -18,6 +18,9 @@ def setup_logging() -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(settings.log_level.upper())
+    # httpx logs full request URLs at INFO; Daikin's token endpoint accepts
+    # credentials in the query string, so those URLs must never reach logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:
