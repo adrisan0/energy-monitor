@@ -97,3 +97,45 @@ async def test_fetch_meter_payload_retries_before_failing(monkeypatch: pytest.Mo
         await fetch_meter_payload()
 
     assert calls == ["http://meter/services/user/values.xml?id=WIBEEE"] * 3
+
+
+@pytest.mark.asyncio
+async def test_fetch_meter_payload_uses_embedded_safe_http_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SIMULATION_MODE", "false")
+    monkeypatch.setenv("METER_URL", "http://meter/")
+    monkeypatch.setenv("METER_DEVICE_ID", "WIBEEE")
+    monkeypatch.setenv("METER_REQUEST_TIMEOUT_SECONDS", "4")
+    get_settings.cache_clear()
+
+    client_kwargs = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        @property
+        def text(self) -> str:
+            return "<root><variable><id>pac1</id><value>1</value></variable></root>"
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            client_kwargs.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr("app.services.meter_client.httpx.AsyncClient", FakeClient)
+
+    result = await fetch_meter_payload()
+
+    assert result.source == "meter"
+    assert client_kwargs["follow_redirects"] is False
+    assert client_kwargs["headers"] == {"Connection": "close"}
+    assert client_kwargs["limits"].max_connections == 1
+    assert client_kwargs["limits"].max_keepalive_connections == 0

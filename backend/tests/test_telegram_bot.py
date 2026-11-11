@@ -14,7 +14,9 @@ from app.services.telegram_bot import (
     apply_callback_action,
     build_status_message,
     find_flux_device,
+    find_thermo_device,
     is_peak_time,
+    parse_thermo_schedule_input,
     parse_allowed_chat_ids,
     parse_bot_tokens,
 )
@@ -96,6 +98,89 @@ async def test_build_status_message_includes_energy_and_led(monkeypatch) -> None
     assert "Importacion: 300 W" in message
     assert "en hora punta" in message
     assert "RGB actual: [1, 2, 3]" in message
+
+
+@pytest.mark.asyncio
+async def test_apply_callback_action_controls_thermo_in_manual(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeAdapter:
+        async def turn_on(self) -> None:
+            calls.append("on")
+
+        async def turn_off(self) -> None:
+            calls.append("off")
+
+    monkeypatch.setattr("app.services.telegram_bot.adapter_for_device", lambda device: FakeAdapter())
+
+    with get_session_factory()() as db:
+        device = find_thermo_device(db)
+        assert device is not None
+        device.status = "active"
+        device.active = True
+        device.control_mode = "automatic"
+
+        result = await apply_callback_action(db, "thermo:power:off")
+
+        assert result == "Termo apagado en manual desde telegram"
+        assert device.control_mode == "manual"
+        assert calls == ["off"]
+
+
+def test_parse_thermo_schedule_input_accepts_exact_date_and_weekday() -> None:
+    exact = parse_thermo_schedule_input("2026-07-20 07:30", now=datetime(2026, 7, 18, 8, 0, tzinfo=UTC))
+    monday = parse_thermo_schedule_input("lunes 07:30", now=datetime(2026, 7, 18, 8, 0, tzinfo=UTC))
+
+    assert exact.astimezone(UTC).strftime("%Y-%m-%d %H:%M") == "2026-07-20 05:30"
+    assert monday.astimezone(UTC).strftime("%Y-%m-%d %H:%M") == "2026-07-20 05:30"
+
+
+@pytest.mark.asyncio
+async def test_run_due_thermo_schedules_executes_and_clears(monkeypatch) -> None:
+    settings = Settings(telegram_allowed_chat_ids="1")
+    service = TelegramBotService(settings)
+    sent: list[str] = []
+    calls: list[str] = []
+
+    class FakeAdapter:
+        async def turn_on(self) -> None:
+            calls.append("on")
+
+        async def turn_off(self) -> None:
+            calls.append("off")
+
+    async def fake_broadcast(client, text):
+        sent.append(text)
+
+    monkeypatch.setattr("app.services.telegram_bot.adapter_for_device", lambda device: FakeAdapter())
+    monkeypatch.setattr(service, "_broadcast", fake_broadcast)
+    monkeypatch.setattr("app.services.telegram_bot.utc_now", lambda: datetime(2026, 7, 18, 8, 0, tzinfo=UTC))
+
+    with get_session_factory()() as db:
+        device = find_thermo_device(db)
+        assert device is not None
+        config = dict(device.config or {})
+        config["telegram_schedules"] = [
+            {
+                "id": "test",
+                "action": "on",
+                "execute_at": "2026-07-18T07:55:00+00:00",
+                "created_at": "2026-07-18T07:50:00+00:00",
+                "chat_id": 1,
+            }
+        ]
+        device.config = config
+        db.commit()
+
+    await service._run_due_thermo_schedules(None)
+
+    with get_session_factory()() as db:
+        device = find_thermo_device(db)
+        assert device is not None
+        assert device.config.get("telegram_schedules") == []
+
+    assert calls == ["on"]
+    assert "Programacion del termo ejecutada" in sent[0]
 
 
 @pytest.mark.asyncio

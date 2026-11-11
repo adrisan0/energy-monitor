@@ -15,11 +15,13 @@ class FakeBulb:
         self.mode = "color"
         self.model = "Controller RGB (0x33)"
         self.color_mode = "RGB"
+        self.turn_on_calls = 0
 
     def query_state(self) -> None:
         return None
 
     def turnOn(self) -> None:
+        self.turn_on_calls += 1
         self.is_on = True
 
     def turnOff(self) -> None:
@@ -64,6 +66,12 @@ class FakeRgbwBulb(FakeBulb):
         self.cold_white = w2
         if brightness is not None:
             self.brightness = brightness
+
+
+class FakeRgbwController(FakeRgbwBulb):
+    def __init__(self, ip_address: str) -> None:
+        super().__init__(ip_address)
+        self.model = "Controller RGBCW (0x35)"
 
 
 @pytest.mark.asyncio
@@ -112,10 +120,10 @@ async def test_flux_led_adapter_set_rgb(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_flux_led_adapter_set_rgb_zeroes_white_channels_on_rgbw_bulb(monkeypatch) -> None:
-    captured: dict[str, FakeRgbwBulb] = {}
+    captured: dict[str, FakeRgbwController] = {}
 
-    def factory(ip_address: str) -> FakeRgbwBulb:
-        bulb = FakeRgbwBulb(ip_address)
+    def factory(ip_address: str) -> FakeRgbwController:
+        bulb = FakeRgbwController(ip_address)
         captured["bulb"] = bulb
         return bulb
 
@@ -127,7 +135,43 @@ async def test_flux_led_adapter_set_rgb_zeroes_white_channels_on_rgbw_bulb(monke
 
 
 @pytest.mark.asyncio
+async def test_flux_led_adapter_set_rgb_uses_rgb_for_rgbw_bulb_model(monkeypatch) -> None:
+    captured: dict[str, FakeRgbwBulb] = {}
+
+    def factory(ip_address: str) -> FakeRgbwBulb:
+        bulb = FakeRgbwBulb(ip_address)
+        captured["bulb"] = bulb
+        return bulb
+
+    monkeypatch.setattr("app.integrations.flux_led.WifiLedBulb", factory)
+    adapter = FluxLedAdapter({"ip_address": "192.168.1.55"})
+    await adapter.set_rgb(10, 20, 30, brightness=99)
+
+    assert captured["bulb"].rgb == (10, 20, 30)
+    assert captured["bulb"].brightness == 99
+    assert captured["bulb"].last_rgbw is None
+
+
+@pytest.mark.asyncio
 async def test_flux_led_adapter_blink_uses_saturated_rgb_on_rgbw_bulb(monkeypatch) -> None:
+    captured: dict[str, FakeRgbwController] = {}
+
+    def factory(ip_address: str) -> FakeRgbwController:
+        bulb = FakeRgbwController(ip_address)
+        captured["bulb"] = bulb
+        return bulb
+
+    monkeypatch.setattr("app.integrations.flux_led.WifiLedBulb", factory)
+    adapter = FluxLedAdapter({"ip_address": "192.168.1.55"})
+    await adapter.set_rgb_blink(255, 200, 0, brightness=30)
+
+    assert captured["bulb"].last_rgbw == (255, 200, 0, 0, 30, 0)
+    assert captured["bulb"].effect is None
+    assert captured["bulb"].turn_on_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_flux_led_adapter_blink_uses_effect_for_rgbw_bulb_model(monkeypatch) -> None:
     captured: dict[str, FakeRgbwBulb] = {}
 
     def factory(ip_address: str) -> FakeRgbwBulb:
@@ -139,5 +183,22 @@ async def test_flux_led_adapter_blink_uses_saturated_rgb_on_rgbw_bulb(monkeypatc
     adapter = FluxLedAdapter({"ip_address": "192.168.1.55"})
     await adapter.set_rgb_blink(255, 200, 0, brightness=30)
 
-    assert captured["bulb"].last_rgbw == (255, 200, 0, 0, 30, 0)
-    assert captured["bulb"].effect is None
+    assert captured["bulb"].last_rgbw is None
+    assert captured["bulb"].effect is not None
+    assert captured["bulb"].turn_on_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_flux_led_adapter_blink_does_not_turn_on_rgb_bulb(monkeypatch) -> None:
+    captured: dict[str, FakeBulb] = {}
+
+    def factory(ip_address: str) -> FakeBulb:
+        bulb = FakeBulb(ip_address)
+        captured["bulb"] = bulb
+        return bulb
+
+    monkeypatch.setattr("app.integrations.flux_led.WifiLedBulb", factory)
+    adapter = FluxLedAdapter({"ip_address": "192.168.1.29"})
+    await adapter.set_rgb_blink(255, 200, 0, brightness=30)
+
+    assert captured["bulb"].turn_on_calls == 0

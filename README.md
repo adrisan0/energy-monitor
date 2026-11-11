@@ -29,37 +29,109 @@ METER_VALUES_PATH=/services/user/values.xml
 METER_DEVICES_PATH=/services/user/devices.xml
 METER_DEVICE_ID=wibeee
 METER_POLL_INTERVAL_SECONDS=60
+METER_REQUEST_TIMEOUT_SECONDS=5
+METER_REQUEST_ATTEMPTS=1
+METER_REQUEST_RETRY_DELAY_SECONDS=2
 TIMEZONE=Europe/Madrid
 ```
 
 Aplica cambios:
 
-```powershell
-docker compose up -d --build
+```bash
+./scripts/install-linux.sh
 ```
 
 Si `values.xml` responde vacio (`<values />`), la app ahora intenta descubrir ids adicionales desde `devices.xml`. Si aun asi no aparecen `pac1`, `pac2` y `fpot1`, el medidor esta exponiendo otro endpoint o un id distinto.
 
 ## Recuperar Wibeee por AP
 
-Si el medidor pierde la Wi-Fi y vuelve a emitir su SSID de rescate `WIBEEE_XX:XX:XX`, puedes usar el script de Linux [recover-wibeee.sh](/home/adrian/repo/energy-monitor/scripts/recover-wibeee.sh).
+Si el medidor pierde la Wi-Fi y vuelve a emitir su SSID de rescate `WIBEEE_XX:XX:XX`, Linux puede dejar residente el servicio host [wibeee-recover.service](/home/adrian/repo/energy-monitor/deploy/systemd/wibeee-recover.service). No vive dentro de Docker porque necesita hablar con NetworkManager (`nmcli`) para cambiar temporalmente la Wi-Fi del servidor.
 
-Ejemplo de uso:
+Modo automatico recomendado:
 
 ```bash
-chmod +x scripts/recover-wibeee.sh
+WIBEEE_RECOVERY_ENABLED=true
+WIBEEE_TARGET_WIFI_SSID=Livebox6-0F16
+WIBEEE_TARGET_WIFI_PASSWORD=tu_clave_wifi_2g
+./scripts/install-linux.sh
+```
+
+Variables minimas en `.env`:
+
+```env
+WIBEEE_TARGET_WIFI_PASSWORD=tu_clave_wifi_2g
+# opcional: si no se define, usa la red actual del host
+WIBEEE_TARGET_WIFI_SSID=
+WIBEEE_RECOVERY_ENABLED=true
+WIBEEE_MAC=
+WIBEEE_AP_PREFIX=WIBEEE
+WIBEEE_WIFI_SECURITY=WPA2-PSK
+WIBEEE_WIFI_TYPEKEY=2
+WIBEEE_MONITOR_INTERVAL=30
+WIBEEE_PORTAL_IP=192.168.1.150
+WIBEEE_PORTAL_TIMEOUT=5
+WIBEEE_RECOVERY_COOLDOWN_SECONDS=900
+WIBEEE_RECOVERY_MAX_ATTEMPTS=2
+WIBEEE_FAILURE_CONFIRMATION_ATTEMPTS=3
+```
+
+En modo `--auto`, el script:
+
+- Confirma varios fallos de lectura en la LAN antes de actuar, salvo `--force`
+- Busca un SSID `WIBEEE...`
+- Se conecta a la Wi-Fi temporal del medidor usando `nmcli`
+- Intenta el portal interno conocido (`192.168.1.150`) y luego IPs tipicas de rescate
+- Toma como SSID destino la red en la que este conectado el host en ese momento, salvo que fijes `WIBEEE_TARGET_WIFI_SSID`
+- Si ya estas conectado al AP del Wibeee, intenta inferir una Wi-Fi domestica guardada; si hay dudas, fija `WIBEEE_TARGET_WIFI_SSID`
+- Usa `WIBEEE_TARGET_WIFI_PASSWORD` del `.env`
+- Reproduce el protocolo observado del firmware: login opcional, escaneo, `config_value` de red, `config_value` de SSID, `config_value` de password y `reset=true`
+- Trata el corte tras `reset=true` como esperado
+- Vuelve siempre que puede a la Wi-Fi normal y valida una lectura real antes de declarar exito
+- Usa bloqueo local y cooldown para evitar recuperaciones simultaneas o bucles agresivos
+
+Si el firmware exige login, configura:
+
+```env
+WIBEEE_LOGIN_USER=admin
+WIBEEE_LOGIN_PASSWORD=tu_password_del_portal
+```
+
+Para una recuperacion manual cuando ya estas conectado al AP del Wibeee:
+
+```bash
+./scripts/recover-wibeee.sh --auto --force --target-ssid 'Tu WiFi 2G'
+```
+
+El script no registra URLs completas con `pwd` o `pass`; esos parametros se redactan antes de escribir logs.
+
+El instalador Linux sincroniza el servicio automaticamente: si `WIBEEE_RECOVERY_ENABLED=true`, instala/actualiza `/etc/systemd/system/wibeee-recover.service` y lo arranca; si esta en `false`, lo para y desactiva.
+
+Comprobar servicio y logs:
+
+```bash
+systemctl status wibeee-recover.service
+journalctl -u wibeee-recover.service -f
+```
+
+El modo residente sondea cada `WIBEEE_MONITOR_INTERVAL` segundos, confirma `WIBEEE_FAILURE_CONFIRMATION_ATTEMPTS` fallos de lectura, busca el AP de rescate y respeta `WIBEEE_RECOVERY_COOLDOWN_SECONDS` entre intentos.
+
+Estado operativo local:
+
+```bash
+cat /tmp/energy-monitor-wibeee-recovery.json
+cat /tmp/energy-monitor-wibeee-recovery.cooldown
+```
+
+Si prefieres el modo diagnostico/manual, sigue disponible:
+
+```bash
 ./scripts/recover-wibeee.sh --ssid-pattern 'WIBEEE.*3C:F4:AE' --home-connection 'Tu WiFi'
 ```
 
-Lo que hace ahora mismo:
+En ese modo:
 
-- Busca un SSID `WIBEEE...`
-- Se conecta a la Wi-Fi temporal del medidor usando `nmcli`
-- Prueba IPs locales tipicas del portal interno (`192.168.4.1`, `10.10.10.1`, `192.168.44.1`)
 - Puede abrir el portal en el navegador con `--open-browser`
-- Vuelve a la Wi-Fi normal y comprueba si el medidor reaparece en la LAN
-
-Cuando conozcas la llamada HTTP exacta del portal del Wibeee, el mismo script puede automatizar la reconfiguracion completa usando estas variables:
+- Puede lanzar una llamada HTTP personalizada si quieres forzar otra ruta distinta:
 
 ```bash
 WIBEEE_CONFIG_URL=/ruta/o/url

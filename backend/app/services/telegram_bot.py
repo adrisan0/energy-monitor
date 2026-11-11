@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -13,12 +13,13 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
-from app.core.timezone import utc_now
+from app.core.timezone import local_zone, to_local, to_utc, utc_now
 from app.db.session import get_session_factory
 from app.integrations.factory import adapter_for_device
 from app.models import Device, MeterSample
 from app.services.device_automation import apply_automation_to_device, merged_automation_config, resolve_color_target
 from app.services.events import record_event
+from app.services.smart_plug_automation import apply_smart_plug_automation_to_device, merged_thermo_automation_config
 
 logger = get_logger(__name__)
 
@@ -28,6 +29,12 @@ class AlertState:
     since: datetime | None = None
     last_sent: datetime | None = None
     active_sent: bool = False
+
+
+@dataclass
+class PendingTelegramAction:
+    kind: str
+    action: str
 
 
 def parse_allowed_chat_ids(raw: str) -> set[int]:
@@ -84,10 +91,32 @@ def find_flux_device(db: Session) -> Device | None:
     )
 
 
-def build_telegram_keyboard(device: Device | None) -> dict[str, Any]:
+def find_thermo_device(db: Session) -> Device | None:
+    devices = db.scalars(select(Device).where(Device.active.is_(True)).order_by(Device.id.asc()))
+    thermo_devices = [
+        device
+        for device in devices
+        if str((device.config or {}).get("adapter", "")) in {"kasa_hs100", "sonoff_s61s"}
+        or device.type == "smart_plug"
+        or "termo" in str(device.name).lower()
+        or str(device.zone or "").lower() == "termo"
+    ]
+    if not thermo_devices:
+        return None
+    active_thermo_devices = [device for device in thermo_devices if device.status == "active"]
+    candidates = active_thermo_devices or thermo_devices
+    return (
+        next((device for device in candidates if str(device.zone or "").lower() == "termo"), None)
+        or next((device for device in candidates if "termo" in str(device.name).lower()), None)
+        or next(iter(candidates), None)
+    )
+
+
+def build_telegram_keyboard(device: Device | None, thermo_device: Device | None = None) -> dict[str, Any]:
     automation = _automation_from_device(device)
     surplus_enabled = bool(automation.get("surplus_override", True))
     blink_enabled = bool(automation.get("blink_on_solar_grid_import", True))
+    thermo_enabled = bool(merged_thermo_automation_config((thermo_device.config if thermo_device else {})).get("enabled", False))
     return {
         "inline_keyboard": [
             [{"text": "Status", "callback_data": "status"}],
@@ -108,6 +137,15 @@ def build_telegram_keyboard(device: Device | None) -> dict[str, Any]:
                 {"text": "Encender", "callback_data": "power:on"},
                 {"text": "Apagar", "callback_data": "power:off"},
             ],
+            [
+                {"text": "Termo AUTO" + (" ON" if thermo_enabled else ""), "callback_data": "thermo:control:automatic"},
+                {"text": "Termo ON", "callback_data": "thermo:power:on"},
+                {"text": "Termo OFF", "callback_data": "thermo:power:off"},
+            ],
+            [
+                {"text": "Prog. ON termo", "callback_data": "thermo:schedule_prompt:on"},
+                {"text": "Prog. OFF termo", "callback_data": "thermo:schedule_prompt:off"},
+            ],
             [{"text": "Probar auto", "callback_data": "apply"}],
         ]
     }
@@ -116,6 +154,7 @@ def build_telegram_keyboard(device: Device | None) -> dict[str, Any]:
 async def build_status_message(db: Session) -> str:
     sample = latest_usable_sample(db)
     device = find_flux_device(db)
+    thermo_device = find_thermo_device(db)
     lines: list[str] = ["Estado energia"]
     if sample is None:
         lines.append("Sin lecturas utiles todavia.")
@@ -170,10 +209,48 @@ async def build_status_message(db: Session) -> str:
         )
     except Exception as exc:  # noqa: BLE001
         lines.append(f"Estado real: error ({exc})")
+
+    lines.append("")
+    lines.append("Termo")
+    if thermo_device is None:
+        lines.append("No hay enchufe del termo configurado.")
+        return "\n".join(lines)
+
+    thermo_automation = merged_thermo_automation_config(thermo_device.config)
+    lines.extend(
+        [
+            f"Dispositivo: {thermo_device.name}",
+            f"Modo control: {thermo_device.control_mode}",
+            f"IP: {thermo_device.ip_address or '-'}",
+            f"Auto excedente: {'ON' if thermo_automation.get('enabled', False) else 'OFF'}",
+        ]
+    )
+    try:
+        thermo_state = await adapter_for_device(thermo_device).get_state()
+        lines.append(
+            "Estado real: "
+            + f"{'online' if thermo_state.online else 'offline'} / "
+            + f"{'encendido' if thermo_state.is_on else 'apagado'}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"Estado real: error ({exc})")
+
+    schedules = _thermo_schedules_from_device(thermo_device)
+    if schedules:
+        lines.append("Programaciones:")
+        for schedule in schedules[:3]:
+            lines.append(f"- {_format_thermo_schedule(schedule)}")
+        if len(schedules) > 3:
+            lines.append(f"- ... y {len(schedules) - 3} mas")
+    else:
+        lines.append("Programaciones: ninguna")
     return "\n".join(lines)
 
 
 async def apply_callback_action(db: Session, data: str) -> str:
+    if data.startswith("thermo:"):
+        return await _apply_thermo_callback_action(db, data)
+
     device = find_flux_device(db)
     if device is None:
         return "No hay lampara flux_led activa."
@@ -227,6 +304,7 @@ class TelegramBotService:
         self.allowed_chat_ids = parse_allowed_chat_ids(self.settings.telegram_allowed_chat_ids)
         self.bot_tokens = parse_bot_tokens(self.settings.telegram_bot_token, self.settings.telegram_bot_tokens)
         self.offset = 0
+        self.pending_inputs: dict[int, PendingTelegramAction] = {}
         self.alerts = {
             "import": AlertState(),
             "peak_import": AlertState(),
@@ -270,6 +348,14 @@ class TelegramBotService:
             if callback_id:
                 await self._api(client, "answerCallbackQuery", {"callback_query_id": callback_id, "text": "No autorizado"})
             return
+        if data.startswith("thermo:schedule_prompt:"):
+            action = data.rsplit(":", 1)[1]
+            self.pending_inputs[chat_id] = PendingTelegramAction(kind="thermo_schedule", action=action)
+            prompt = _thermo_schedule_prompt(action)
+            if callback_id:
+                await self._api(client, "answerCallbackQuery", {"callback_query_id": callback_id, "text": "Esperando fecha y hora"})
+            await self._api(client, "sendMessage", {"chat_id": chat_id, "text": prompt})
+            return
         with get_session_factory()() as db:
             result = await apply_callback_action(db, data)
             record_event(
@@ -281,7 +367,7 @@ class TelegramBotService:
             )
             db.commit()
             status = await build_status_message(db)
-            keyboard = build_telegram_keyboard(find_flux_device(db))
+            keyboard = build_telegram_keyboard(find_flux_device(db), find_thermo_device(db))
         if callback_id:
             await self._api(client, "answerCallbackQuery", {"callback_query_id": callback_id, "text": result})
         message = callback.get("message") or {}
@@ -300,6 +386,10 @@ class TelegramBotService:
             await self._send_status(client, chat_id)
 
     async def _handle_text(self, client: httpx.AsyncClient, chat_id: int, text: str) -> None:
+        if chat_id in self.pending_inputs and not text.startswith("/"):
+            handled = await self._handle_pending_input(client, chat_id, text)
+            if handled:
+                return
         command = text.split()[0].lower().split("@", 1)[0] if text else "/status"
         action = {
             "/start": "status",
@@ -320,6 +410,9 @@ class TelegramBotService:
             "/on": "power:on",
             "/off": "power:off",
             "/apply": "apply",
+            "/termo_on": "thermo:power:on",
+            "/termo_off": "thermo:power:off",
+            "/termo_auto": "thermo:control:automatic",
         }.get(command)
         if action is None:
             await self._api(client, "sendMessage", {"chat_id": chat_id, "text": "Comando no reconocido. Usa /status."})
@@ -342,7 +435,7 @@ class TelegramBotService:
     async def _send_status(self, client: httpx.AsyncClient, chat_id: int) -> None:
         with get_session_factory()() as db:
             text = await build_status_message(db)
-            keyboard = build_telegram_keyboard(find_flux_device(db))
+            keyboard = build_telegram_keyboard(find_flux_device(db), find_thermo_device(db))
         await self._api(client, "sendMessage", {"chat_id": chat_id, "text": text, "reply_markup": keyboard})
 
     async def _authorize(self, client: httpx.AsyncClient, chat_id: int) -> bool:
@@ -353,6 +446,7 @@ class TelegramBotService:
         return False
 
     async def _maybe_send_alerts(self, client: httpx.AsyncClient) -> None:
+        await self._run_due_thermo_schedules(client)
         with get_session_factory()() as db:
             sample = latest_usable_sample(db)
         if sample is None:
@@ -439,6 +533,110 @@ class TelegramBotService:
             raise RuntimeError(f"Telegram API error on {method}: {body}")
         return body.get("result")
 
+    async def _handle_pending_input(self, client: httpx.AsyncClient, chat_id: int, text: str) -> bool:
+        pending = self.pending_inputs.get(chat_id)
+        if pending is None:
+            return False
+        if text.strip().lower() in {"cancelar", "cancel"}:
+            self.pending_inputs.pop(chat_id, None)
+            await self._api(client, "sendMessage", {"chat_id": chat_id, "text": "Programacion cancelada."})
+            await self._send_status(client, chat_id)
+            return True
+        if pending.kind != "thermo_schedule":
+            self.pending_inputs.pop(chat_id, None)
+            return False
+
+        try:
+            execute_at = parse_thermo_schedule_input(text)
+        except ValueError as exc:
+            await self._api(client, "sendMessage", {"chat_id": chat_id, "text": f"{exc}\n{_thermo_schedule_prompt(pending.action)}"})
+            return True
+
+        with get_session_factory()() as db:
+            device = find_thermo_device(db)
+            if device is None:
+                self.pending_inputs.pop(chat_id, None)
+                await self._api(client, "sendMessage", {"chat_id": chat_id, "text": "No hay termo compatible configurado."})
+                return True
+            schedule = _append_thermo_schedule(device, pending.action, execute_at, chat_id)
+            record_event(
+                db,
+                event_type="telegram_command",
+                severity="info",
+                message=f"Programacion termo {'encender' if pending.action == 'on' else 'apagar'} creada",
+                metadata={"chat_id": chat_id, "schedule": schedule},
+            )
+            db.commit()
+
+        self.pending_inputs.pop(chat_id, None)
+        local_execute_at = to_local(execute_at)
+        await self._api(
+            client,
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": (
+                    f"Termo programado para {'encender' if pending.action == 'on' else 'apagar'} "
+                    f"el {local_execute_at:%Y-%m-%d %H:%M}."
+                ),
+            },
+        )
+        await self._send_status(client, chat_id)
+        return True
+
+    async def _run_due_thermo_schedules(self, client: httpx.AsyncClient) -> None:
+        messages: list[str] = []
+        with get_session_factory()() as db:
+            device = find_thermo_device(db)
+            if device is None:
+                return
+            schedules = _thermo_schedules_from_device(device)
+            if not schedules:
+                return
+
+            now = utc_now()
+            remaining: list[dict[str, Any]] = []
+            due: list[dict[str, Any]] = []
+            for schedule in schedules:
+                execute_at = _parse_schedule_datetime(schedule.get("execute_at"))
+                if execute_at is None:
+                    continue
+                if execute_at <= now:
+                    due.append(schedule)
+                else:
+                    remaining.append(schedule)
+
+            if not due:
+                return
+
+            for schedule in due:
+                action = str(schedule.get("action") or "")
+                when = _parse_schedule_datetime(schedule.get("execute_at")) or now
+                try:
+                    result = await _execute_thermo_power_action(db, device, action, source="programacion")
+                    record_event(
+                        db,
+                        event_type="telegram_command",
+                        severity="info",
+                        message=result,
+                        metadata={"schedule": schedule},
+                    )
+                    messages.append(
+                        f"Programacion del termo ejecutada ({'encender' if action == 'on' else 'apagar'} "
+                        f"{to_local(when):%Y-%m-%d %H:%M}): {result}"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    messages.append(
+                        f"Fallo al ejecutar la programacion del termo "
+                        f"({'encender' if action == 'on' else 'apagar'} {to_local(when):%Y-%m-%d %H:%M}): {exc}"
+                    )
+
+            _save_thermo_schedules(device, remaining)
+            db.commit()
+
+        for message in messages:
+            await self._broadcast(client, message)
+
 
 async def run_telegram_bot_forever() -> None:
     await TelegramBotService().run_forever()
@@ -516,3 +714,183 @@ def _as_utc(value: datetime) -> datetime:
 def _save_device_config(device: Device, config: dict[str, Any]) -> None:
     device.config = config
     flag_modified(device, "config")
+
+
+async def _apply_thermo_callback_action(db: Session, data: str) -> str:
+    device = find_thermo_device(db)
+    if device is None:
+        return "No hay termo compatible configurado."
+
+    if data == "thermo:control:automatic":
+        device.control_mode = "automatic"
+        config = dict(device.config or {})
+        automation = merged_thermo_automation_config(config)
+        automation["enabled"] = True
+        config["thermo_automation"] = automation
+        _save_device_config(device, config)
+        sample = latest_usable_sample(db)
+        if sample is None:
+            return "Termo en automatico. Aun no hay lecturas para aplicarlo."
+        decision = await apply_smart_plug_automation_to_device(db, device, sample, force=True)
+        if decision is None:
+            return "Termo en automatico."
+        return f"Termo en automatico: {decision.reason}"
+
+    if data == "thermo:control:manual":
+        device.control_mode = "manual"
+        return "Termo en manual."
+
+    if data == "thermo:power:on":
+        return await _execute_thermo_power_action(db, device, "on", source="telegram")
+    if data == "thermo:power:off":
+        return await _execute_thermo_power_action(db, device, "off", source="telegram")
+    return "Accion del termo no reconocida."
+
+
+async def _execute_thermo_power_action(db: Session, device: Device, action: str, *, source: str) -> str:
+    adapter = adapter_for_device(device)
+    device.control_mode = "manual"
+    if action == "on":
+        await adapter.turn_on()
+        return f"Termo encendido en manual desde {source}"
+    if action == "off":
+        await adapter.turn_off()
+        return f"Termo apagado en manual desde {source}"
+    raise RuntimeError(f"Accion no soportada para el termo: {action}")
+
+
+def _thermo_schedule_prompt(action: str) -> str:
+    verb = "encender" if action == "on" else "apagar"
+    return (
+        f"Escribe la fecha y hora para {verb} el termo.\n"
+        "Formatos admitidos: `2026-07-20 07:30`, `20/07/2026 07:30` o `lunes 07:30`.\n"
+        "Escribe `cancelar` para salir."
+    )
+
+
+def parse_thermo_schedule_input(text: str, *, now: datetime | None = None) -> datetime:
+    clean = " ".join(text.strip().split())
+    if not clean:
+        raise ValueError("Falta fecha y hora.")
+
+    local_now = to_local(now or utc_now())
+    for fmt in ("%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M"):
+        try:
+            naive_local = datetime.strptime(clean, fmt)
+        except ValueError:
+            continue
+        scheduled = naive_local.replace(tzinfo=local_zone())
+        if scheduled <= local_now:
+            raise ValueError("La fecha indicada ya ha pasado.")
+        return scheduled.astimezone(UTC)
+
+    parts = clean.lower().split(" ", 1)
+    if len(parts) == 2:
+        weekday = _weekday_from_text(parts[0])
+        if weekday is not None:
+            try:
+                parsed_time = datetime.strptime(parts[1], "%H:%M").time()
+            except ValueError as exc:  # noqa: PERF203
+                raise ValueError("La hora debe tener formato HH:MM.") from exc
+            target_date = _next_weekday_date(local_now.date(), local_now.time(), weekday, parsed_time)
+            scheduled = datetime.combine(target_date, parsed_time, tzinfo=local_zone())
+            return scheduled.astimezone(UTC)
+
+    raise ValueError("Formato no valido. Usa `2026-07-20 07:30`, `20/07/2026 07:30` o `lunes 07:30`.")
+
+
+def _weekday_from_text(value: str) -> int | None:
+    mapping = {
+        "lunes": 0,
+        "lun": 0,
+        "martes": 1,
+        "mar": 1,
+        "miercoles": 2,
+        "miércoles": 2,
+        "mie": 2,
+        "mié": 2,
+        "jueves": 3,
+        "jue": 3,
+        "viernes": 4,
+        "vie": 4,
+        "sabado": 5,
+        "sábado": 5,
+        "sab": 5,
+        "sáb": 5,
+        "domingo": 6,
+        "dom": 6,
+    }
+    return mapping.get(value)
+
+
+def _next_weekday_date(current_date: date, current_time: time, target_weekday: int, target_time: time) -> date:
+    days_ahead = (target_weekday - current_date.weekday()) % 7
+    if days_ahead == 0 and target_time <= current_time.replace(second=0, microsecond=0):
+        days_ahead = 7
+    return date.fromordinal(current_date.toordinal() + days_ahead)
+
+
+def _thermo_schedules_from_device(device: Device | None) -> list[dict[str, Any]]:
+    if device is None:
+        return []
+    raw = (device.config or {}).get("telegram_schedules", [])
+    if not isinstance(raw, list):
+        return []
+    schedules: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        execute_at = _parse_schedule_datetime(item.get("execute_at"))
+        action = item.get("action")
+        if execute_at is None or action not in {"on", "off"}:
+            continue
+        schedules.append(
+            {
+                "id": str(item.get("id") or ""),
+                "action": action,
+                "execute_at": execute_at.isoformat(),
+                "created_at": str(item.get("created_at") or ""),
+                "chat_id": item.get("chat_id"),
+            }
+        )
+    return sorted(schedules, key=lambda item: str(item.get("execute_at") or ""))
+
+
+def _append_thermo_schedule(device: Device, action: str, execute_at: datetime, chat_id: int) -> dict[str, Any]:
+    schedules = _thermo_schedules_from_device(device)
+    schedule = {
+        "id": f"thermo-{int(utc_now().timestamp())}-{len(schedules) + 1}",
+        "action": action,
+        "execute_at": execute_at.astimezone(UTC).isoformat(),
+        "created_at": utc_now().isoformat(),
+        "chat_id": chat_id,
+    }
+    schedules.append(schedule)
+    _save_thermo_schedules(device, schedules)
+    return schedule
+
+
+def _save_thermo_schedules(device: Device, schedules: list[dict[str, Any]]) -> None:
+    config = dict(device.config or {})
+    config["telegram_schedules"] = schedules
+    _save_device_config(device, config)
+
+
+def _parse_schedule_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _format_thermo_schedule(schedule: dict[str, Any]) -> str:
+    execute_at = _parse_schedule_datetime(schedule.get("execute_at"))
+    if execute_at is None:
+        return "programacion invalida"
+    action = "ON" if schedule.get("action") == "on" else "OFF"
+    return f"{action} {to_local(execute_at):%Y-%m-%d %H:%M}"

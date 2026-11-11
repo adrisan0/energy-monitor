@@ -68,15 +68,24 @@ def test_cli_status_json() -> None:
 
 @pytest.mark.asyncio
 async def test_worker_records_meter_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = {"count": 0}
+
     async def broken_fetch() -> MeterFetchResult:
         raise RuntimeError("meter down")
 
+    async def fake_apply_meter_outage_failsafe(db) -> None:
+        del db
+        called["count"] += 1
+
     monkeypatch.setattr(poller, "fetch_meter_payload", broken_fetch)
+    monkeypatch.setattr(poller, "apply_meter_outage_failsafe", fake_apply_meter_outage_failsafe)
     with get_session_factory()() as db:
         result = await poller.poll_once(db)
         events = db.query(SystemEvent).all()
         assert not result.ok
         assert events[-1].event_type == "meter_poll_failed"
+        assert events[-1].metadata_json == {"outage_failsafe_applied": True}
+    assert called["count"] == 1
 
 
 @pytest.mark.asyncio
@@ -93,15 +102,24 @@ async def test_worker_stores_corrupt_xml(monkeypatch: pytest.MonkeyPatch) -> Non
 
 @pytest.mark.asyncio
 async def test_worker_records_empty_values_as_poll_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = {"count": 0}
+
     async def empty_fetch() -> MeterFetchResult:
         raise RuntimeError("No se pudo obtener XML del medidor: http://meter/: respuesta sin XML util")
 
+    async def fake_apply_meter_outage_failsafe(db) -> None:
+        del db
+        called["count"] += 1
+
     monkeypatch.setattr(poller, "fetch_meter_payload", empty_fetch)
+    monkeypatch.setattr(poller, "apply_meter_outage_failsafe", fake_apply_meter_outage_failsafe)
     with get_session_factory()() as db:
         result = await poller.poll_once(db)
         events = db.query(SystemEvent).all()
         assert not result.ok
         assert events[-1].event_type == "meter_poll_failed"
+        assert events[-1].metadata_json == {"outage_failsafe_applied": True}
+    assert called["count"] == 1
 
 
 @pytest.mark.asyncio

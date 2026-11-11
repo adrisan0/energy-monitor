@@ -33,6 +33,10 @@ class PollResult:
 async def poll_once(db: Session) -> PollResult:
     try:
         fetched = await fetch_meter_payload()
+    except Exception as exc:  # noqa: BLE001 - worker must keep running
+        return await _record_meter_poll_failure(db, exc)
+
+    try:
         parsed = parse_meter_xml(fetched.payload)
         sample = store_parsed_payload(db, parsed, poll_duration_ms=fetched.duration_ms)
         await apply_automation_for_sample(db, sample)
@@ -53,17 +57,26 @@ async def poll_once(db: Session) -> PollResult:
         )
         return PollResult(ok=True, sample_id=sample.id)
     except Exception as exc:  # noqa: BLE001 - worker must keep running
-        db.rollback()
-        record_event(
-            db,
-            event_type="meter_poll_failed",
-            severity="error",
-            message=str(exc),
-            metadata={},
-        )
-        db.commit()
-        logger.exception("meter_poll_failed")
-        return PollResult(ok=False, error=str(exc))
+        return await _record_meter_poll_failure(db, exc)
+
+
+async def _record_meter_poll_failure(db: Session, exc: Exception) -> PollResult:
+    db.rollback()
+    # A failed read is the first reliable signal that the Wibeee has lost its
+    # network connection.  Do not wait for the prolonged-outage threshold: the
+    # lamps are still reachable on the home LAN and must show the white safety
+    # state immediately.
+    await apply_meter_outage_failsafe(db)
+    record_event(
+        db,
+        event_type="meter_poll_failed",
+        severity="error",
+        message=str(exc),
+        metadata={"outage_failsafe_applied": True},
+    )
+    db.commit()
+    logger.exception("meter_poll_failed")
+    return PollResult(ok=False, error=str(exc))
 
 
 def maybe_record_meter_recovery(db: Session, sample: MeterSample) -> None:

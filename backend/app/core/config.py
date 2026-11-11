@@ -18,7 +18,20 @@ class Settings(BaseSettings):
     meter_device_id: str | None = None
     meter_poll_interval_seconds: int = Field(default=60, ge=5)
     meter_request_timeout_seconds: float = Field(default=5.0, gt=0)
-    meter_request_attempts: int = Field(default=3, ge=1, le=10)
+    meter_request_attempts: int = Field(default=1, ge=1, le=10)
+    meter_request_retry_delay_seconds: float = Field(default=2.0, ge=0)
+    wibeee_recovery_enabled: bool = False
+    wibeee_mac: str | None = None
+    wibeee_ap_prefix: str = "WIBEEE"
+    wibeee_target_wifi_ssid: str | None = None
+    wibeee_target_wifi_password: str | None = None
+    wibeee_login_user: str | None = None
+    wibeee_login_password: str | None = None
+    wibeee_wifi_security: str = "WPA2-PSK"
+    wibeee_wifi_typekey: int = 2
+    wibeee_recovery_cooldown_seconds: int = Field(default=900, ge=60)
+    wibeee_recovery_max_attempts: int = Field(default=2, ge=1, le=10)
+    wibeee_failure_confirmation_attempts: int = Field(default=3, ge=2, le=20)
     timezone: str = "Europe/Madrid"
     simulation_mode: bool = True
 

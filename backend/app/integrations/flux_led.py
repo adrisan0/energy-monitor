@@ -67,6 +67,9 @@ class FluxLedAdapter(DeviceAdapter):
 
     def _set_rgb_sync(self, r: int, g: int, b: int, brightness: int | None) -> None:
         bulb = self._make_bulb()
+        if _is_white_channel_bulb(bulb):
+            bulb.setRgb(r, g, b, brightness=brightness)
+            return
         if _supports_white_channels(bulb):
             # RGBCW bulbs can keep a white channel active unless we zero it explicitly.
             bulb.setRgbw(r, g, b, 0, brightness=brightness, w2=0)
@@ -75,7 +78,9 @@ class FluxLedAdapter(DeviceAdapter):
 
     def _set_rgb_blink_sync(self, r: int, g: int, b: int, brightness: int | None) -> None:
         bulb = self._make_bulb()
-        bulb.turnOn()
+        if _is_white_channel_bulb(bulb):
+            bulb.set_effect(_nearest_strobe_effect((r, g, b)), speed=60, brightness=_effect_brightness(brightness))
+            return
         if _supports_white_channels(bulb):
             bulb.setRgbw(r, g, b, 0, brightness=brightness, w2=0)
             return
@@ -109,6 +114,11 @@ def _brightness_to_power(brightness: Any) -> Decimal | None:
 def _supports_white_channels(bulb: WifiLedBulb) -> bool:
     model = str(getattr(bulb, "model", "") or "").lower()
     return bool(getattr(bulb, "rgbwcapable", False)) or "rgbw" in model or "rgbcw" in model or "rgbww" in model
+
+
+def _is_white_channel_bulb(bulb: WifiLedBulb) -> bool:
+    model = str(getattr(bulb, "model", "") or "").lower()
+    return _supports_white_channels(bulb) and "bulb" in model
 
 
 def _effect_brightness(brightness: int | None) -> int:

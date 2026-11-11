@@ -1,0 +1,25 @@
+[Unit]
+Description=Wibeee Wi-Fi auto-recovery
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# NetworkManager only authorizes this unattended network-changing service as root.
+# The recovery script needs to rescan and temporarily activate the Wibeee AP.
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=__REPO_ROOT__/.env
+Environment=WIBEEE_LOCK_FILE=/run/energy-monitor/wibeee-recovery.lock
+Environment=WIBEEE_STATE_FILE=/run/energy-monitor/wibeee-recovery.json
+Environment=WIBEEE_COOLDOWN_FILE=/run/energy-monitor/wibeee-recovery.cooldown
+ExecStart=/usr/bin/env bash __REPO_ROOT__/scripts/recover-wibeee.sh --monitor --auto
+Restart=always
+RestartSec=15
+TimeoutStopSec=15
+KillSignal=SIGTERM
+NoNewPrivileges=true
+RuntimeDirectory=energy-monitor
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

@@ -32,7 +32,22 @@ async def fetch_meter_payload() -> MeterFetchResult:
 
     last_error: str | None = None
 
-    async with httpx.AsyncClient(timeout=settings.meter_request_timeout_seconds, follow_redirects=True) as client:
+    timeout = httpx.Timeout(
+        timeout=settings.meter_request_timeout_seconds,
+        connect=settings.meter_request_timeout_seconds,
+        read=settings.meter_request_timeout_seconds,
+        write=settings.meter_request_timeout_seconds,
+        pool=settings.meter_request_timeout_seconds,
+    )
+    limits = httpx.Limits(max_connections=1, max_keepalive_connections=0, keepalive_expiry=0.0)
+    headers = {"Connection": "close"}
+
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        limits=limits,
+        headers=headers,
+        follow_redirects=False,
+    ) as client:
         device_ids = [settings.meter_device_id.strip()] if settings.meter_device_id and settings.meter_device_id.strip() else []
         if not device_ids:
             for discovered_id in await _discover_meter_device_ids(
@@ -68,7 +83,7 @@ async def fetch_meter_payload() -> MeterFetchResult:
                 last_error = f"{url}: respuesta sin XML util"
 
             if attempt + 1 < settings.meter_request_attempts:
-                await asyncio.sleep(0.35 * (attempt + 1))
+                await asyncio.sleep(settings.meter_request_retry_delay_seconds * (attempt + 1))
 
     detail = last_error or "sin respuesta del medidor"
     raise RuntimeError(f"No se pudo obtener XML del medidor: {detail}")
